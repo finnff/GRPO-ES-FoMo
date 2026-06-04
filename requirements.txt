@@ -1,0 +1,14 @@
+# Core pins, stage 1 of 2. requirements.txt + requirements-verifiers.txt are
+# the source of truth; pyproject.toml reads both.
+#
+# Why two stages: trl 1.5.1 declares datasets>=4.7 while verifiers 0.1.14
+# declares datasets<4.7, so a single pip resolve refuses the combination
+# outright. Installing verifiers in a second invocation downgrades datasets
+# to 4.6.x with a warning — that pairing is the known-good one in practice.
+# Use scripts/setup_env.sh, or run the two pip installs by hand in order.
+torch
+trl==1.5.1
+transformers>=5.5,<6
+huggingface-hub>=1.5,<2
+accelerate>=1.0
+peft>=0.13

@@ -1,0 +1,5 @@
+# Stage 2 of 2 — install AFTER requirements.txt (see the note there).
+# Pulls datasets back down to 4.6.x; pip warns about trl's declared bound,
+# which is expected and fine.
+verifiers==0.1.14
+datasets>=4.6,<4.7

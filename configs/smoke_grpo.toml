@@ -1,0 +1,14 @@
+# Smallest end-to-end GRPO run: a few toy rows, a fraction of an epoch.
+# Exists to catch wiring breakage in seconds, not to train anything.
+#
+#   python run.py --config configs/smoke_grpo.toml
+#
+# Keys are RunConfig field names; any CLI flag still overrides what's here.
+method = "grpo"
+task = "toy"
+max_samples = 4
+num_generations = 2
+max_completion_length = 64
+num_train_epochs = 0.01
+save_steps = 1000
+output_dir = "outputs/smoke-toy"

@@ -1,0 +1,3 @@
+# Optional metrics dashboard (--trackio). Kept out of core: trackio drags in
+# gradio and friends, which the training stack doesn't need.
+trackio>=0.24

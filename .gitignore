@@ -1,0 +1,62 @@
+## =========================
+# Python Core
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# =========================
+# Environments
+# =========================
+.env
+.venv
+env/
+venv/
+
+# =========================
+# Packaging & Distribution
+# =========================
+build/
+dist/
+*.egg-info/
+*.egg
+
+# =========================
+# Testing & Coverage
+# =========================
+.pytest_cache/
+.coverage
+htmlcov/
+
+# =========================
+# Machine Learning & Outputs
+# =========================
+# Training outputs
+outputs/
+
+# Model weights, states, and optimizers
+*.safetensors
+*.pt
+*.pth
+*.bin
+
+# =========================
+# IDEs, AI Assistants & OS Files
+# =========================
+.vscode/
+.idea/
+.DS_Store
+
+# AI Tools & Smart IDE workspaces
+.cursor/
+.claude/
+.codex/
+.copilot/
+
+# =========================
+# Rendering Artifacts
+# =========================
+# Quarto and markdown rendering cache
+.quarto/
+*_files/
+
