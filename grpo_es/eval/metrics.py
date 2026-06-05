@@ -7,12 +7,45 @@ produced here is directly comparable to the training reward.
 
 from __future__ import annotations
 
+import zlib
 from dataclasses import dataclass, field
 from typing import Any
 
 from verifiers.rubrics.rubric import Rubric
 
 from grpo_es.rewards.trl_bridge import VerifiersRubricAdapter, format_reward_func
+
+# Coherence gate thresholds, calibrated on real completions: pure single-token
+# spam ("WillWillWill...") compresses to ~0.01 of its size, the most
+# repetitive legitimate text we've seen sits around 0.18. The band between
+# LO and HI ramps linearly instead of cliffing.
+GATE_LO = 0.05
+GATE_HI = 0.12
+GATE_MIN_CHARS = 120  # too short to judge — never gated
+
+
+def compression_ratio(text: str) -> float:
+    raw = text.encode("utf-8")
+    if not raw:
+        return 1.0
+    return len(zlib.compress(raw, 9)) / len(raw)
+
+
+def coherence_gate(text: str) -> float:
+    """Degeneracy gate in [0, 1]: 0 for token spam, 1 for normal text.
+
+    Verifiable rewards can be partially satisfied by degenerate repetition;
+    reward alone won't show it, so eval reports this alongside. zlib is the
+    detector because repetition is precisely what it compresses best.
+    """
+    if len(text) < GATE_MIN_CHARS:
+        return 1.0
+    r = compression_ratio(text)
+    if r <= GATE_LO:
+        return 0.0
+    if r >= GATE_HI:
+        return 1.0
+    return (r - GATE_LO) / (GATE_HI - GATE_LO)
 
 
 @dataclass

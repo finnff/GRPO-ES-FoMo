@@ -1,0 +1,12 @@
+# GRPO on GSM8K — the first benchmark cell.
+#
+#   python run.py --config configs/grpo_gsm8k.toml --seed 0
+#
+# Keys are RunConfig field names; any CLI flag still overrides what's here.
+method = "grpo"
+task = "gsm8k"
+model = "qwen3.5-0.8b"
+max_samples = 100
+# Worked solutions need room; 512 clips long chains of thought.
+max_completion_length = 768
+output_dir = "outputs/grpo-gsm8k"

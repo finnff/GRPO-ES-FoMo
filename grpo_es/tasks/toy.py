@@ -30,6 +30,10 @@ TOY_SPEC = TaskSpec(
     rubric="toy",
     system_prompt=TOY_SYSTEM,
     build_prompt=_build_prompt,
+    # Generated data has no real splits: a fresh generator seed IS the
+    # held-out set (the loader ignores `split`).
+    eval_seed=999,
+    eval_max_new=128,
 )
 
 

@@ -1,0 +1,15 @@
+# GRPO on MMLU-Pro — 10-way MCQ; training rolls out on the upstream test
+# split, eval uses the disjoint 70-row validation split.
+#
+#   python run.py --config configs/grpo_mmlu_pro.toml --seed 0
+#
+# Keys are RunConfig field names; any CLI flag still overrides what's here.
+method = "grpo"
+task = "mmlu_pro"
+model = "qwen3.5-0.8b"
+max_samples = 100
+# 10 options inflate the prompt; training completions stay tighter than the
+# eval caps (1024/1536) to keep rollout cost sane on one GPU.
+max_prompt_length = 1024
+max_completion_length = 768
+output_dir = "outputs/grpo-mmlu-pro"

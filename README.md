@@ -5,13 +5,12 @@ Strategies** (gradient-free, perturb-and-rank), selected with `--method`. Same p
 verifiable reward, same config schema — only the inner optimizer loop differs.
 
 Design: [GRPO_ES_ARCHITECTURE.md](GRPO_ES_ARCHITECTURE.md). Current state: the shared spine
-(config / tasks / rewards / token budget) plus the **GRPO leg** on two generated smoke tasks
-(`toy`, `countdown`). The benchmark tasks, held-out eval runner, hub-env adapter, and the ES
-leg land on top of this skeleton.
+(config / tasks / rewards / token budget), the **GRPO leg**, two generated smoke tasks
+(`toy`, `countdown`), two benchmark tasks (`gsm8k`, `mmlu_pro`), the held-out **eval
+runner** (KL-to-base, paired significance tests), and a small model alias ladder. The
+hub-env adapter, instruction-following tasks, and the ES leg land on top.
 
-Hardware target: a single RTX 5090 (CUDA, bf16). Default model: `Qwen/Qwen3.5-0.8B`
-(instruct — follows the `<think>`/`<answer>` template far more reliably than the `-Base`
-checkpoint).
+Hardware target: a single RTX 5090 (CUDA, bf16).
 
 ## Install
 
@@ -37,8 +36,7 @@ Optional: `pip install -r requirements-trackio.txt` for the `--trackio` metrics 
 python run.py --config configs/smoke_grpo.toml
 
 # A real run:
-python run.py --method grpo --task countdown --model Qwen/Qwen3.5-0.8B \
-  --max-samples 100 --seed 0 --output-dir outputs/grpo-countdown
+python run.py --config configs/grpo_gsm8k.toml --seed 0
 ```
 
 Defaults live in TOML files under `configs/` (keys are config field names);
@@ -51,12 +49,35 @@ optimizers) into `--output-dir`.
 Two seeds, deliberately separate: `--seed` drives the optimizer, `--data-seed` (pinned by
 default) drives the train-slice shuffle — so a seed sweep trains every run on the same rows.
 
+## Models
+
+`--model` takes an HF repo id, a local path, or one of these aliases (resolved to the
+canonical id before `run_config.json` is written):
+
+| Alias | Repo |
+|---|---|
+| `qwen3.5-0.8b` | `Qwen/Qwen3.5-0.8B` (default) |
+| `smollm2-135m` / `smollm2-360m` / `smollm2-1.7b` | `HuggingFaceTB/SmolLM2-*-Instruct` |
+| `lfm2.5-350m` | `LiquidAI/LFM2.5-350M` |
+| `lfm2.5-1.2b` | `LiquidAI/LFM2.5-1.2B-Instruct` |
+
+Deliberately small: the optimizer comparison is only informative while the base model has
+headroom on the task. LoRA targets are architecture-aware (`grpo_es/models.py`) — LFM2's
+hybrid conv+attention stack names its projections differently from Llama-family models.
+
 ## Tasks
 
 | `--task` | Reward | Purpose |
 |---|---|---|
 | `toy` | last-letter concatenation, exact match | wiring smoke test |
 | `countdown` | reach a target using each operand exactly once (safe AST eval) | first non-trivial reward |
+| `gsm8k` | boxed number, symbolic equivalence via `math_verify` | math benchmark |
+| `mmlu_pro` | normalized letter match (10-way MCQ) | knowledge benchmark |
+
+`mmlu_pro` scores with a letter-match rubric rather than the math rubric: symbolic
+verification false-negatives on the variants a small model emits (`C.`, `**C**`,
+`C) Paris`), which under GRPO actively pushes the policy *away* from correct answers. The
+math rubric still rides along at weight 0 to log the size of that gap.
 
 Rewards are [PrimeIntellect `verifiers`](https://github.com/PrimeIntellect-ai/verifiers)
 `Rubric` objects wrapped as TRL reward functions (`grpo_es/rewards/trl_bridge.py`), plus a
@@ -64,9 +85,30 @@ Rewards are [PrimeIntellect `verifiers`](https://github.com/PrimeIntellect-ai/ve
 within-group advantage alive on fresh models where an all-or-nothing check scores 0
 everywhere.
 
+## Eval
+
+Held-out evaluation lives behind one entry point and never touches training code paths:
+
+```bash
+python -m grpo_es.eval --task gsm8k --model qwen3.5-0.8b \
+  --adapter base outputs/grpo-gsm8k/checkpoint-final --kl --json out.json
+```
+
+Each task pins its held-out slice in the `TaskSpec` (split, shuffle seed, offset, size) so
+it is disjoint from the training draw; generated tasks hold out a fresh generator seed
+instead. Per adapter the runner reports the task metric, exact-solve fraction, format
+score, a zlib-based **coherence gate** (degenerate-repetition detector), clip fraction,
+and — with `--kl` — a k3 estimate of KL(adapter‖base) teacher-forced over the very
+completions being scored. `--decode-from RUNDIR` replays a training run's sampling regime;
+the default is greedy.
+
+The `--json` payload keeps the full per-sample reward vectors: since every method is
+scored on the same prompts, comparisons go through *paired* bootstrap CIs and permutation
+tests (`grpo_es/eval/stats.py`), not pooled means.
+
 ## Tests
 
 ```bash
-pytest            # unit tests, no GPU needed
+pytest            # unit tests, no GPU needed (two download a few HF rows)
 pytest -m slow    # (none yet at this stage)
 ```

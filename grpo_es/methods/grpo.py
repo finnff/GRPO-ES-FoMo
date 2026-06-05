@@ -19,15 +19,13 @@ from trl import GRPOConfig, GRPOTrainer
 from grpo_es.config.run_config import RunConfig
 from grpo_es.methods.callbacks import CompactMetricsCallback
 from grpo_es.metrics.budget import extract_trl_token_budget
+from grpo_es.models import lora_targets_for
 from grpo_es.rewards.registry import make_trl_reward_funcs
 from grpo_es.tasks.base import build_dataset
 from grpo_es.tasks.registry import get_task_spec
 
 logger = logging.getLogger(__name__)
 
-# Llama-family attention projections (SmolLM2, Qwen, ...). Revisit when a
-# non-Llama rung joins the model ladder — don't fork this list per model.
-_LORA_TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj"]
 _LORA_DROPOUT = 0.05
 
 
@@ -84,7 +82,7 @@ def _peft_config(cfg: RunConfig) -> LoraConfig | None:
         lora_dropout=_LORA_DROPOUT,
         bias="none",
         task_type="CAUSAL_LM",
-        target_modules=_LORA_TARGETS,
+        target_modules=lora_targets_for(cfg.model),
     )
 
 

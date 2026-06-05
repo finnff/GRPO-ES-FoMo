@@ -14,8 +14,10 @@ import tomllib
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
+from grpo_es.models import resolve_model_alias
+
 KNOWN_METHODS = ("grpo",)
-KNOWN_TASKS = ("toy", "countdown")
+KNOWN_TASKS = ("toy", "countdown", "gsm8k", "mmlu_pro")
 
 DEFAULT_MODEL = "Qwen/Qwen3.5-0.8B"
 
@@ -131,7 +133,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     opt("--method", default=d.method, choices=KNOWN_METHODS)
     opt("--task", default=d.task, choices=KNOWN_TASKS)
-    opt("--model", default=d.model, help="HF repo id or local path")
+    opt(
+        "--model",
+        default=d.model,
+        help="HF repo id, local path, or a short alias from grpo_es.models "
+        "(e.g. smollm2-360m, qwen3.5-0.8b, lfm2.5-1.2b)",
+    )
 
     opt("--seed", default=d.seed, type=int, help="optimizer seed (sweep this)")
     opt(
@@ -214,4 +221,8 @@ def parse_args(argv: list[str] | None = None) -> RunConfig:
     if getattr(a, "config", None):
         values.update(_load_config_file(Path(a.config)))
     values.update(_cli_overrides(a))
-    return RunConfig(**values)
+    cfg = RunConfig(**values)
+    # Resolve here, after the TOML/CLI merge, so run_config.json always
+    # records the canonical repo id — never an alias.
+    cfg.model = resolve_model_alias(cfg.model)
+    return cfg
