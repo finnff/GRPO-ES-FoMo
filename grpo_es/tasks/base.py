@@ -21,6 +21,11 @@ class TaskSpec:
     system_prompt: str
     build_prompt: Callable[[dict], str]
 
+    # Whether completions are expected to carry the <think>/<answer>
+    # scaffold. Hub-env rubrics grade the raw response, so env tasks turn
+    # this off and the format reward is dropped with it.
+    format_scaffold: bool = True
+
     # Held-out eval slice: shuffle `eval_split` with `eval_seed`, keep rows
     # [eval_offset : eval_offset + eval_size]. Each task picks these so the
     # slice is disjoint from the training draw; generated tasks get a fresh

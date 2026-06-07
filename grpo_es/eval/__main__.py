@@ -19,6 +19,7 @@ import json
 from pathlib import Path
 
 from grpo_es.config.logging_setup import configure_logging
+from grpo_es.config.run_config import task_arg
 from grpo_es.eval.metrics import coherence_gate
 from grpo_es.eval.runner import DecodeParams, evaluate_adapter, load_tokenizer
 from grpo_es.models import resolve_model_alias
@@ -43,7 +44,12 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="python -m grpo_es.eval",
         description="Score base model + adapters on a task's held-out slice.",
     )
-    p.add_argument("--task", required=True, choices=sorted(SPECS))
+    p.add_argument(
+        "--task",
+        required=True,
+        type=task_arg,
+        help=f"one of {sorted(SPECS)} or env:<owner>/<env>",
+    )
     p.add_argument(
         "--model", required=True, help="HF repo id, local path, or short alias"
     )

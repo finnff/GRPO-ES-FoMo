@@ -22,6 +22,17 @@ KNOWN_TASKS = ("toy", "countdown", "gsm8k", "mmlu_pro")
 DEFAULT_MODEL = "Qwen/Qwen3.5-0.8B"
 
 
+def task_arg(value: str) -> str:
+    """``--task`` validator: a built-in name, or ``env:<owner>/<env>`` for a
+    PrimeIntellect hub environment (registered lazily, needs .venv-prime)."""
+    if value in KNOWN_TASKS or value.startswith("env:"):
+        return value
+    raise argparse.ArgumentTypeError(
+        f"unknown task {value!r}; choose from {KNOWN_TASKS} or "
+        f"'env:<owner>/<env>' (PrimeIntellect hub — see README)"
+    )
+
+
 @dataclass
 class RunConfig:
     # What to run.
@@ -132,7 +143,12 @@ def _build_parser() -> argparse.ArgumentParser:
         p.add_argument(*names, action="store_true", default=argparse.SUPPRESS, **kwargs)
 
     opt("--method", default=d.method, choices=KNOWN_METHODS)
-    opt("--task", default=d.task, choices=KNOWN_TASKS)
+    opt(
+        "--task",
+        default=d.task,
+        type=task_arg,
+        help=f"one of {KNOWN_TASKS} or env:<owner>/<env>",
+    )
     opt(
         "--model",
         default=d.model,

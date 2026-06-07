@@ -34,6 +34,14 @@ _FACTORIES: dict[str, Callable[[], Rubric]] = {
     "mmlu_pro": MCQLetterRubric,
 }
 
+# Hub-env tasks register their rubric factory here at task-registration time
+# (tasks/from_env.py); _FACTORIES above stays the closed set of built-ins.
+DYNAMIC_RUBRICS: dict[str, Callable[[], Rubric]] = {}
+
+
+def register_rubric(name: str, factory: Callable[[], Rubric]) -> None:
+    DYNAMIC_RUBRICS[name] = factory
+
 # Shadow rubrics: scored and logged every step but weighted 0, so they shape
 # nothing and cost only compute. mmlu_pro shadows the math rubric to measure
 # its false-negative rate on letter answers (the reason MCQLetterRubric
@@ -44,10 +52,13 @@ _SHADOW_FACTORIES: dict[str, list[Callable[[], Rubric]]] = {
 
 
 def get_rubric(name: str) -> Rubric:
-    try:
+    if name in _FACTORIES:
         return _FACTORIES[name]()
-    except KeyError:
-        raise KeyError(f"unknown rubric {name!r}; known: {sorted(_FACTORIES)}") from None
+    if name in DYNAMIC_RUBRICS:
+        return DYNAMIC_RUBRICS[name]()
+    raise KeyError(
+        f"unknown rubric {name!r}; known: {sorted(_FACTORIES) + sorted(DYNAMIC_RUBRICS)}"
+    )
 
 
 def make_trl_reward_funcs(

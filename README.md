@@ -7,8 +7,9 @@ verifiable reward, same config schema — only the inner optimizer loop differs.
 Design: [GRPO_ES_ARCHITECTURE.md](GRPO_ES_ARCHITECTURE.md). Current state: the shared spine
 (config / tasks / rewards / token budget), the **GRPO leg**, two generated smoke tasks
 (`toy`, `countdown`), two benchmark tasks (`gsm8k`, `mmlu_pro`), the held-out **eval
-runner** (KL-to-base, paired significance tests), and a small model alias ladder. The
-hub-env adapter, instruction-following tasks, and the ES leg land on top.
+runner** (KL-to-base, paired significance tests), a small model alias ladder, and the
+**hub-env adapter** (`--task env:<owner>/<env>`). Instruction-following tasks and the ES
+leg land on top.
 
 Hardware target: a single RTX 5090 (CUDA, bf16).
 
@@ -85,6 +86,41 @@ Rewards are [PrimeIntellect `verifiers`](https://github.com/PrimeIntellect-ai/ve
 within-group advantage alive on fresh models where an all-or-nothing check scores 0
 everywhere.
 
+## Hub environments
+
+Single-turn tasks from the
+[PrimeIntellect Environments Hub](https://app.primeintellect.ai/dashboard/environments)
+plug in as `--task env:<owner>/<env>` — their dataset and rubric are consumed directly,
+nothing gets vendored. Hub environments are pip wheels with their own dependency trees
+(a fresh `verifiers`, a newer `openai`); installing one into FoMo-RL would re-resolve the
+pinned trl/verifiers/datasets combination, so hub deps live in a dedicated venv and the
+trainer talks to it through a small worker subprocess (JSON lines over stdin/stdout,
+`scripts/prime_env_worker.py`):
+
+```bash
+# one-time: build .venv-prime and install the environment(s) into it (needs uv)
+scripts/setup_prime_venv.sh primeintellect/gsm8k
+
+# then train / eval from the normal FoMo-RL env:
+python run.py --task env:primeintellect/gsm8k --model smollm2-360m \
+  --output-dir outputs/grpo-env-gsm8k
+python -m grpo_es.eval --task env:primeintellect/gsm8k --model smollm2-360m \
+  --adapter base outputs/grpo-env-gsm8k/checkpoint-final
+```
+
+`$PRIME_ENV_PYTHON` points the worker at a different venv's python if needed. Env tasks
+score the **raw response** (no `<think>/<answer>` scaffold), so the format reward is
+dropped for them automatically.
+
+Two boundaries to know about. Multi-turn / tool / sandbox environments are out of scope:
+both optimizer legs generate locally and bypass the env's rollout harness, so only
+dataset + rubric are reachable (the adapter warns on non-`SingleTurnEnv` envs). And when
+an env publishes no eval split, the held-out slice falls back to its train data — the
+loader warns; carve a disjoint window with `--slice` on the eval CLI, or via the Python
+API (`task_from_environment(..., eval_offset=, eval_size=)` in `grpo_es/tasks/from_env.py`,
+which also takes a `rubric_override` for envs whose all-or-nothing stock rubric would
+collapse the within-group advantage).
+
 ## Eval
 
 Held-out evaluation lives behind one entry point and never touches training code paths:
@@ -109,6 +145,7 @@ tests (`grpo_es/eval/stats.py`), not pooled means.
 ## Tests
 
 ```bash
-pytest            # unit tests, no GPU needed (two download a few HF rows)
+pytest            # unit tests, no GPU needed (two download a few HF rows;
+                  # the hub-env end-to-end test skips without .venv-prime)
 pytest -m slow    # (none yet at this stage)
 ```

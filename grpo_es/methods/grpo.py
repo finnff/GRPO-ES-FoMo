@@ -107,7 +107,8 @@ def run_grpo(cfg: RunConfig) -> Path:
     )
     reward_funcs, reward_weights = make_trl_reward_funcs(
         spec.rubric,
-        use_format_reward=cfg.use_format_reward,
+        # Hub-env rubrics grade the raw response — no scaffold to reward.
+        use_format_reward=cfg.use_format_reward and spec.format_scaffold,
         reward_weights=cfg.reward_weights,
     )
 
