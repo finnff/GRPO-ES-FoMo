@@ -6,10 +6,10 @@ verifiable reward, same config schema — only the inner optimizer loop differs.
 
 Design: [GRPO_ES_ARCHITECTURE.md](GRPO_ES_ARCHITECTURE.md). Current state: the shared spine
 (config / tasks / rewards / token budget), the **GRPO leg**, two generated smoke tasks
-(`toy`, `countdown`), two benchmark tasks (`gsm8k`, `mmlu_pro`), the held-out **eval
-runner** (KL-to-base, paired significance tests), a small model alias ladder, and the
-**hub-env adapter** (`--task env:<owner>/<env>`). Instruction-following tasks and the ES
-leg land on top.
+(`toy`, `countdown`), two benchmark tasks (`gsm8k`, `mmlu_pro`), two instruction-following
+tasks (`ifeval`, `ifbench`), the held-out **eval runner** (KL-to-base, paired significance
+tests), a small model alias ladder, and the **hub-env adapter**
+(`--task env:<owner>/<env>`). The ES leg lands on top.
 
 Hardware target: a single RTX 5090 (CUDA, bf16).
 
@@ -74,6 +74,17 @@ hybrid conv+attention stack names its projections differently from Llama-family 
 | `countdown` | reach a target using each operand exactly once (safe AST eval) | first non-trivial reward |
 | `gsm8k` | boxed number, symbolic equivalence via `math_verify` | math benchmark |
 | `mmlu_pro` | normalized letter match (10-way MCQ) | knowledge benchmark |
+| `ifeval` | fraction of verifiable instructions followed | instruction following |
+| `ifbench` | same checkers, newer and harder instruction set | harder IF benchmark |
+
+`ifeval` and `ifbench` are served by their PrimeIntellect hub environments
+(`primeintellect/ifeval`, `primeintellect/ifbench` — nothing vendored), so they need the
+one-time `.venv-prime` setup from the **Hub environments** section below. Their stock
+reward is the all-or-nothing "every instruction followed", which collapses GRPO's
+within-group advantage on hard prompts — these tasks train on the env's graded
+per-instruction rate instead, and the strict pass/fail stays in the metrics. Both
+benchmarks publish a single eval-only split (541 / 300 rows); each spec pins a 100-row
+holdout and the training draw excludes exactly that window.
 
 `mmlu_pro` scores with a letter-match rubric rather than the math rubric: symbolic
 verification false-negatives on the variants a small model emits (`C.`, `**C**`,
@@ -98,7 +109,9 @@ trainer talks to it through a small worker subprocess (JSON lines over stdin/std
 `scripts/prime_env_worker.py`):
 
 ```bash
-# one-time: build .venv-prime and install the environment(s) into it (needs uv)
+# one-time: build .venv-prime and install environment(s) into it (needs uv);
+# the ifeval/ifbench tasks install the same way:
+#   scripts/setup_prime_venv.sh primeintellect/ifeval primeintellect/ifbench
 scripts/setup_prime_venv.sh primeintellect/gsm8k
 
 # then train / eval from the normal FoMo-RL env:
@@ -115,11 +128,13 @@ dropped for them automatically.
 Two boundaries to know about. Multi-turn / tool / sandbox environments are out of scope:
 both optimizer legs generate locally and bypass the env's rollout harness, so only
 dataset + rubric are reachable (the adapter warns on non-`SingleTurnEnv` envs). And when
-an env publishes no eval split, the held-out slice falls back to its train data — the
-loader warns; carve a disjoint window with `--slice` on the eval CLI, or via the Python
-API (`task_from_environment(..., eval_offset=, eval_size=)` in `grpo_es/tasks/from_env.py`,
-which also takes a `rubric_override` for envs whose all-or-nothing stock rubric would
-collapse the within-group advantage).
+an env publishes only one split, training and the holdout share a pool — the loader warns
+unless the spec pins an eval window (`task_from_environment(..., eval_offset=, eval_size=)`
+in `grpo_es/tasks/from_env.py`), in which case the training draw excludes exactly that
+window. The same function takes `reward_metric=` to promote one of the env's graded
+metrics to the reward, or `rubric_override=` to swap in a spine rubric entirely — the
+escape hatches for envs whose all-or-nothing stock reward would collapse the within-group
+advantage (the named `ifeval`/`ifbench` tasks use `reward_metric`).
 
 ## Eval
 
@@ -146,6 +161,6 @@ tests (`grpo_es/eval/stats.py`), not pooled means.
 
 ```bash
 pytest            # unit tests, no GPU needed (two download a few HF rows;
-                  # the hub-env end-to-end test skips without .venv-prime)
+                  # the hub-env end-to-end tests skip without .venv-prime)
 pytest -m slow    # (none yet at this stage)
 ```

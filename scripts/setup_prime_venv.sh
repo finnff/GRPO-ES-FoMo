@@ -28,7 +28,9 @@ uv pip install --python "$VENV/bin/python" --upgrade verifiers prime
 
 for env_id in "$@"; do
     # prime shells out to uv pip itself; VIRTUAL_ENV aims it at this venv.
-    VIRTUAL_ENV="$VENV" "$VENV/bin/prime" env install "$env_id"
+    # --prerelease: some envs (ifbench) pin a verifiers dev release, which uv
+    # refuses to resolve otherwise; this venv is disposable, so allow it.
+    VIRTUAL_ENV="$VENV" "$VENV/bin/prime" env install --prerelease "$env_id"
 done
 
 # The import that breaks in the training env must work here.

@@ -19,13 +19,13 @@ import json
 from pathlib import Path
 
 from grpo_es.config.logging_setup import configure_logging
-from grpo_es.config.run_config import task_arg
+from grpo_es.config.run_config import KNOWN_TASKS, task_arg
 from grpo_es.eval.metrics import coherence_gate
 from grpo_es.eval.runner import DecodeParams, evaluate_adapter, load_tokenizer
 from grpo_es.models import resolve_model_alias
 from grpo_es.rewards.registry import get_rubric
 from grpo_es.tasks.base import build_eval_dataset
-from grpo_es.tasks.registry import SPECS, get_task_spec
+from grpo_es.tasks.registry import get_task_spec
 
 
 def _parse_slice(text: str) -> tuple[int, int]:
@@ -48,7 +48,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--task",
         required=True,
         type=task_arg,
-        help=f"one of {sorted(SPECS)} or env:<owner>/<env>",
+        help=f"one of {sorted(KNOWN_TASKS)} or env:<owner>/<env>",
     )
     p.add_argument(
         "--model", required=True, help="HF repo id, local path, or short alias"

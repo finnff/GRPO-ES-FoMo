@@ -159,11 +159,16 @@ class RemoteEnvRubric(Rubric):
     rubrics speak, so the TRL bridge and the eval runner need no changes.
     Each rollout is one worker round-trip; the wire protocol can batch, but
     the per-rollout Rubric interface is the seam everything else calls.
+
+    ``reward_metric`` swaps the env's headline reward for one of its named
+    metrics — the escape hatch for envs whose stock reward is all-or-nothing
+    (ifeval, ifbench) when a graded sibling metric exists.
     """
 
-    def __init__(self, env_id: str) -> None:
+    def __init__(self, env_id: str, reward_metric: str | None = None) -> None:
         super().__init__()
         self.env_id = env_id
+        self.reward_metric = reward_metric
 
     async def score_rollout(self, state: dict, **_: Any) -> dict:
         item = {
@@ -174,9 +179,25 @@ class RemoteEnvRubric(Rubric):
             "task": state.get("task") or "default",
         }
         rewards, metrics = HubEnvClient.shared().score(self.env_id, [item])
-        state["reward"] = rewards[0]
+        reward = rewards[0]
+        if self.reward_metric is not None:
+            reward = float(metrics[0].get(self.reward_metric, reward))
+        state["reward"] = reward
         state["metrics"] = metrics[0]
         return state
+
+
+def drop_eval_window(dataset: Dataset, spec: TaskSpec) -> Dataset:
+    """Remove the spec's held-out slice from a single-pool dataset.
+
+    Mirrors ``build_eval_dataset`` exactly — the holdout is
+    ``shuffle(eval_seed)[eval_offset : eval_offset + eval_size]`` — so the
+    training draw stays disjoint from it whatever the data seed does next.
+    """
+    shuffled = dataset.shuffle(seed=spec.eval_seed)
+    held_out = range(spec.eval_offset, spec.eval_offset + spec.eval_size)
+    keep = [i for i in range(len(shuffled)) if i not in held_out]
+    return shuffled.select(keep)
 
 
 def task_from_environment(
@@ -184,6 +205,7 @@ def task_from_environment(
     env_id: str,
     *,
     rubric_override: str | None = None,
+    reward_metric: str | None = None,
     prompt_transform: Callable[[Any, str], str] | None = None,
     eval_split: str = "test",
     eval_seed: int = 0,
@@ -197,10 +219,13 @@ def task_from_environment(
 ) -> tuple[TaskSpec, Callable[..., Dataset]]:
     """Build (and by default register) a TaskSpec + loader from a hub env.
 
-    ``rubric_override`` keeps a spine rubric where the env's stock rubric is
-    wrong for the gradient (all-or-nothing scoring collapses within-group
-    advantage); ``eval_offset``/``eval_size`` carve a disjoint holdout when
-    the env publishes only one split.
+    Two ways out of an env whose stock reward is wrong for the gradient
+    (all-or-nothing scoring collapses within-group advantage):
+    ``reward_metric`` promotes one of the env's own graded metrics to the
+    reward, and ``rubric_override`` swaps in a spine rubric entirely (it
+    wins; ``reward_metric`` is ignored with it). ``eval_offset``/``eval_size``
+    pin a holdout window when the env publishes only one split — the train
+    draw then excludes exactly that window.
     """
     client = HubEnvClient.shared()
     meta = client.load(env_id, **load_kwargs)
@@ -262,12 +287,26 @@ def task_from_environment(
             if row.get("task") is not None:
                 item["task"] = row["task"]
             mapped.append(item)
-        return shuffle_take(Dataset.from_list(mapped), seed, max_samples)
+        ds = Dataset.from_list(mapped)
+        if split == "train" and source == "eval_dataset":
+            # Eval-only env: training reads the same pool as the holdout.
+            if spec.eval_size is None:
+                logger.warning(
+                    "env %s publishes only an eval split and the spec pins "
+                    "no eval_size — training rows overlap the held-out "
+                    "slice.",
+                    env_id,
+                )
+            else:
+                ds = drop_eval_window(ds, spec)
+        return shuffle_take(ds, seed, max_samples)
 
     if register:
         register_task(spec, load_env_task)
         if rubric_override is None:
-            register_rubric(spec.rubric, lambda: RemoteEnvRubric(env_id))
+            register_rubric(
+                spec.rubric, lambda: RemoteEnvRubric(env_id, reward_metric)
+            )
     return spec, load_env_task
 
 

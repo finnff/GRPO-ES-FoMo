@@ -17,7 +17,8 @@ from pathlib import Path
 from grpo_es.models import resolve_model_alias
 
 KNOWN_METHODS = ("grpo",)
-KNOWN_TASKS = ("toy", "countdown", "gsm8k", "mmlu_pro")
+# ifeval/ifbench are hub-backed (need .venv-prime, see README).
+KNOWN_TASKS = ("toy", "countdown", "gsm8k", "mmlu_pro", "ifeval", "ifbench")
 
 DEFAULT_MODEL = "Qwen/Qwen3.5-0.8B"
 

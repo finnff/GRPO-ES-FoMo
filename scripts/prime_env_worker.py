@@ -70,22 +70,31 @@ def _op_load(req: dict) -> dict:
     }
 
 
+def _maybe(getter) -> object | None:
+    try:
+        return getter()
+    except Exception:
+        return None
+
+
 def _op_dataset(req: dict) -> dict:
     env = _get_env(req["env_id"])
     split = req.get("split", "train")
 
     ds, source = None, "dataset"
     if split != "train" and hasattr(env, "get_eval_dataset"):
-        try:
-            ds = env.get_eval_dataset()
-        except Exception:
-            ds = None
+        ds = _maybe(env.get_eval_dataset)
         if ds is not None:
             source = "eval_dataset"
     if ds is None:
-        ds = env.get_dataset()
-    # `source` tells the parent whether a non-train split really got held-out
-    # data or silently fell back to the train rows.
+        ds = _maybe(env.get_dataset)
+    if ds is None:
+        # Eval-only env (ifeval, ifbench): the train split reads the eval
+        # rows too. Raises if this env has no dataset at all.
+        ds, source = env.get_eval_dataset(), "eval_dataset"
+    # `source` tells the parent which pool a split really got — a train
+    # split sourced from "eval_dataset" (or an eval split from "dataset")
+    # shares rows with the other side, and the parent must carve or warn.
     return {"rows": [dict(row) for row in ds], "source": source}
 
 
@@ -137,7 +146,17 @@ async def _score_one(rubric: object, item: dict) -> tuple[float, dict]:
         reward, metrics = out.get("reward"), out.get("metrics")
     if reward is None:  # 0.1.x mutated the state instead of returning
         reward, metrics = state.get("reward"), state.get("metrics")
-    return float(reward or 0.0), dict(metrics or {})
+    metrics = dict(metrics or {})
+
+    # Some envs (ifeval, ifbench) return a placeholder from a metric func
+    # and write the real value into state under the same name. Plain envs
+    # never put metric-named scalars in state, so the overlay is a no-op
+    # for them.
+    for key in metrics:
+        from_state = state.get(key)
+        if isinstance(from_state, (int, float)):
+            metrics[key] = float(from_state)
+    return float(reward or 0.0), metrics
 
 
 def _op_score(req: dict) -> dict:

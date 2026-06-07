@@ -7,17 +7,23 @@ worker imports verifiers lazily, so the protocol tests can drive it with
 """
 
 import argparse
+import asyncio
 import json
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from datasets import Dataset
 
 from grpo_es.config.run_config import task_arg
 from grpo_es.rewards.registry import DYNAMIC_RUBRICS, get_rubric, register_rubric
+from grpo_es.tasks.base import TaskSpec
 from grpo_es.tasks.from_env import (
+    HubEnvClient,
+    RemoteEnvRubric,
     default_prompt_transform,
+    drop_eval_window,
     hub_python,
     messages_text,
 )
@@ -107,6 +113,59 @@ def test_dynamic_rubric_registry_fallback():
         DYNAMIC_RUBRICS.pop("test:dyn", None)
 
 
+# --- single-pool holdout carving + reward_metric --------------------------------
+
+
+def _if_like_spec(**overrides) -> TaskSpec:
+    fields = dict(
+        name="t",
+        rubric="t",
+        system_prompt="",
+        build_prompt=lambda row: row["prompt"],
+        eval_seed=3,
+        eval_offset=2,
+        eval_size=5,
+    )
+    fields.update(overrides)
+    return TaskSpec(**fields)
+
+
+def test_drop_eval_window_is_disjoint_from_eval_slice():
+    ds = Dataset.from_list([{"id": i} for i in range(20)])
+    spec = _if_like_spec()
+    # What build_eval_dataset extracts: shuffle(eval_seed)[offset:offset+size].
+    held_out = ds.shuffle(seed=spec.eval_seed).select(
+        range(spec.eval_offset, spec.eval_offset + spec.eval_size)
+    )
+    train_pool = drop_eval_window(ds, spec)
+    assert len(train_pool) == 15
+    assert set(train_pool["id"]).isdisjoint(held_out["id"])
+    assert set(train_pool["id"]) | set(held_out["id"]) == set(range(20))
+
+
+class _StubClient:
+    def score(self, env_id, rollouts):
+        return [0.0] * len(rollouts), [{"some_rate": 0.4}] * len(rollouts)
+
+
+def _scored_state(rubric: RemoteEnvRubric) -> dict:
+    state = {"prompt": "p", "completion": "c", "answer": "", "info": {}}
+    return asyncio.run(rubric.score_rollout(state))
+
+
+def test_reward_metric_promotes_env_metric(monkeypatch):
+    monkeypatch.setattr(HubEnvClient, "_shared", _StubClient())
+    assert _scored_state(RemoteEnvRubric("e"))["reward"] == 0.0
+    assert (
+        _scored_state(RemoteEnvRubric("e", reward_metric="some_rate"))["reward"]
+        == 0.4
+    )
+    # Missing metric falls back to the env reward instead of crashing.
+    assert (
+        _scored_state(RemoteEnvRubric("e", reward_metric="ghost"))["reward"] == 0.0
+    )
+
+
 # --- end-to-end (needs .venv-prime with primeintellect/gsm8k) ------------------
 
 
@@ -146,3 +205,51 @@ def test_gsm8k_env_end_to_end():
         answer=[row["answer"]] * 2,
     )
     assert rewards == [1.0, 0.0]
+
+
+def _hub_pkg_installed(pkg: str) -> bool:
+    if not _venv_ready():
+        return False
+    probe = subprocess.run(
+        [str(hub_python()), "-c", f"import {pkg}"], capture_output=True
+    )
+    return probe.returncode == 0
+
+
+@pytest.mark.skipif(
+    not _hub_pkg_installed("ifeval"),
+    reason="no .venv-prime with ifeval (scripts/setup_prime_venv.sh "
+    "primeintellect/ifeval)",
+)
+def test_ifeval_task_end_to_end():
+    from grpo_es.tasks.base import build_dataset, build_eval_dataset
+    from grpo_es.tasks.registry import get_task_spec
+
+    spec = get_task_spec("ifeval")
+    assert spec.format_scaffold is False
+    assert spec.metric_label == "instruction_rate"
+    assert spec.eval_size == 100
+
+    # IFEval publishes one 541-row eval-only split; the training pool must
+    # exclude exactly the pinned holdout window.
+    train = build_dataset(spec, split="train", seed=0)
+    held_out = build_eval_dataset(spec)
+    assert len(train) == 441 and len(held_out) == 100
+    assert set(train["prompt"]).isdisjoint(held_out["prompt"])
+
+    # The reward is the graded rate, not the all-or-nothing pass/fail.
+    rubric = get_rubric(spec.rubric)
+    row = train[0]
+    state = asyncio.run(
+        rubric.score_rollout(
+            {
+                "prompt": row["prompt"],
+                "completion": "Way too short, and it even has commas.",
+                "answer": row["answer"],
+                "info": row["info"],
+            }
+        )
+    )
+    assert state["reward"] == state["metrics"]["followed_instructions_rate"]
+    assert 0.0 <= state["reward"] < 1.0
+    assert state["metrics"]["followed_instructions"] == 0.0
