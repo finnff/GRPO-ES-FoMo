@@ -1,0 +1,23 @@
+# Warm-started, trust-regioned ES — the calibrated "ES as refiner" recipe.
+# Pass the GRPO checkpoint to refine on the CLI (it's per-run, not a default):
+#
+#   python run.py --config configs/es_warm_tr.toml \
+#       --task ifeval --es-init-adapter outputs/<grpo-run>/checkpoint-final
+#
+# Calibration rules behind these numbers (they move together, don't tweak one):
+#   - sigma: hold the per-step noise norm sigma*sqrt(P) around ~5 — well below
+#     a typical honest adapter norm (~13). At the default LoRA size
+#     (r=16 on q/k/v/o, P~1.1M) that gives sigma=0.005; scale sigma by
+#     1/sqrt(P) if the adapter grows. Too large and the very first population
+#     buries the init it was meant to refine (the startup log warns).
+#   - trust region: R ~ 0.6x the init adapter's norm. Token-spam collapse
+#     lives at adapter norms ~15-40x an honest solution, so the cap removes
+#     that basin geometrically; watch theta_dev in the step logs to see
+#     whether it binds.
+method = "es"
+es_population = 8
+es_sigma = 0.005
+es_lr = 1e-4
+es_steps = 40
+es_trust_region = 8.0
+output_dir = "outputs/es-warm-tr"

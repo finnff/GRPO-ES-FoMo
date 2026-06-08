@@ -7,19 +7,27 @@ moves the adapter along the rank-weighted noise sum (OpenAI-ES). Perturbing
 only the LoRA tensors keeps the search dimension ~10^6 instead of the full
 model's ~10^8-9.
 
-First cut, deliberately rough: members generate sequentially (the batched
-population forward is the planned throughput fix), and there is no warm-start
-and no trust region yet — see GRPO_ES_ARCHITECTURE.md §6 for where this is
-headed.
+The population rides the batch dimension instead of looping: a forward hook
+on each LoRA layer adds per-member deltas via grouped ``bmm`` while the
+adapter itself is disabled, so one ``generate`` call scores a whole chunk of
+members. Two stay-honest levers complete the leg: ``--es-init-adapter``
+warm-starts from a trained adapter (charging that run's tokens to this
+budget), and ``--es-trust-region`` caps the cumulative parameter-space step —
+naive ES at large σ reward-hacks dense checkers into token-spam, which lives
+at adapter norms an order of magnitude above any honest solution, and the
+norm cap removes that basin geometrically (see README).
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import math
 import random
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 
 import torch
 from peft import get_peft_model
@@ -55,25 +63,58 @@ def centered_ranks(values: list[float]) -> list[float]:
 class ESEngine:
     """The θ handle: an fp32 master copy of the LoRA tensors + the update rule.
 
-    The live module is treated as a scratchpad — ``perturb`` writes
-    master + scale·ε into it for one member's rollout, ``update`` folds the
-    ranked noise back into the master and re-syncs the live weights. The
-    master is fp32 because at σ ~1e-2 perturbations would drown in the bf16
-    noise floor if accumulated in a half dtype (PEFT keeps LoRA tensors fp32
-    even on a bf16 base, so today the copy is exact).
+    Members never touch the live weights — ``population`` overlays per-member
+    deltas through forward hooks while PEFT's adapter path is disabled, so the
+    live module always holds θ. The master is fp32 because at σ ~1e-2
+    perturbations would drown in the bf16 noise floor if accumulated in a half
+    dtype (PEFT keeps LoRA tensors fp32 even on a bf16 base, so today the copy
+    is exact).
     """
 
     def __init__(
-        self, model: PreTrainedModel, *, sigma: float, lr: float, seed: int
+        self,
+        model: PreTrainedModel,
+        *,
+        sigma: float,
+        lr: float,
+        seed: int,
+        trust_region: float = 0.0,
     ) -> None:
         self.sigma = sigma
         self.lr = lr
         self.seed = seed
-        # Fixed capture order: every noise vector and update zips against it.
-        self.params = [p for name, p in model.named_parameters() if "lora_" in name]
-        if not self.params:
-            raise ValueError("no LoRA parameters to perturb (is PEFT attached?)")
+        self.trust_region = trust_region
+        self._model = model
+        # Fixed capture order — (A, B) per LoRA layer in module-walk order;
+        # every noise vector and update zips against ``params``.
+        self.layers: list[tuple[torch.nn.Module, float]] = []
+        self.params: list[torch.nn.Parameter] = []
+        for module in model.modules():
+            lora_A = getattr(module, "lora_A", None)
+            if not isinstance(lora_A, torch.nn.ModuleDict) or "default" not in lora_A:
+                continue
+            self.layers.append((module, module.scaling["default"]))
+            self.params.append(module.lora_A["default"].weight)
+            self.params.append(module.lora_B["default"].weight)
+        if not self.layers:
+            raise ValueError("no LoRA layers to perturb (is PEFT attached?)")
         self.master = [p.detach().clone().float() for p in self.params]
+        # Anchor for the trust region and the theta_dev diagnostic. For a
+        # warm start this is the loaded adapter, not zero.
+        self.init = [m.clone() for m in self.master]
+
+    @property
+    def num_params(self) -> int:
+        return sum(p.numel() for p in self.params)
+
+    def init_norm(self) -> float:
+        return math.sqrt(sum(i.pow(2).sum().item() for i in self.init))
+
+    def theta_dev(self) -> float:
+        """Global L2 distance of the master from its start point."""
+        return math.sqrt(
+            sum((m - i).pow(2).sum().item() for m, i in zip(self.master, self.init))
+        )
 
     def sample_noise(self, step: int, pairs: int) -> list[list[torch.Tensor]]:
         """``pairs`` ε-vectors shaped like θ, deterministic in (seed, step)."""
@@ -87,21 +128,53 @@ class ESEngine:
             for _ in range(pairs)
         ]
 
-    @torch.no_grad()
-    def perturb(self, eps: list[torch.Tensor], scale: float) -> None:
-        """Write θ = master + scale·ε into the live module (fp32 add, then cast)."""
-        for p, m, e in zip(self.params, self.master, eps):
-            p.copy_((m + scale * e).to(p.dtype))
+    @contextmanager
+    def population(
+        self, noise: list[list[torch.Tensor]], sign: float
+    ) -> Iterator[None]:
+        """Overlay members θ + sign·σ·ε_i for the duration of the context.
+
+        Inputs must be member-major — row block j of the batch belongs to
+        member j. Each LoRA layer's hook reshapes its input to
+        ``[members, rows/members · seq, d]`` and adds the per-member
+        ``x·Aᵢᵀ·Bᵢᵀ·scaling`` via two grouped ``bmm``s in fp32 (matching
+        PEFT's cast-input-to-adapter-dtype semantics), while
+        ``disable_adapter`` keeps the shared adapter path out of the way.
+        """
+        members = len(noise)
+        handles = []
+        for l, (module, scaling) in enumerate(self.layers):
+            a_pop = torch.stack(
+                [self.master[2 * l] + sign * self.sigma * eps[2 * l] for eps in noise]
+            )
+            b_pop = torch.stack(
+                [
+                    self.master[2 * l + 1] + sign * self.sigma * eps[2 * l + 1]
+                    for eps in noise
+                ]
+            )
+            handles.append(
+                module.register_forward_hook(
+                    _member_delta_hook(a_pop, b_pop, scaling, members)
+                )
+            )
+        try:
+            with self._model.disable_adapter():
+                yield
+        finally:
+            for handle in handles:
+                handle.remove()
 
     @torch.no_grad()
-    def restore(self) -> None:
+    def sync_live(self) -> None:
         for p, m in zip(self.params, self.master):
             p.copy_(m.to(p.dtype))
 
     @torch.no_grad()
     def update(self, noise: list[list[torch.Tensor]], fitnesses: list[float]) -> None:
-        """One ES step: θ += lr/(2Nσ) · Σ_pairs (u⁺−u⁻)·ε, then sync the live
-        module. ``fitnesses`` are ordered [+ε₀, −ε₀, +ε₁, −ε₁, ...]."""
+        """One ES step: θ += lr/(2Nσ) · Σ_pairs (u⁺−u⁻)·ε, project back onto
+        the trust-region ball, then sync the live module. ``fitnesses`` are
+        ordered [+ε₀, −ε₀, +ε₁, −ε₁, ...]."""
         assert len(fitnesses) == 2 * len(noise), (
             f"expected 2 fitnesses per noise pair, got {len(fitnesses)} for "
             f"{len(noise)} pairs"
@@ -109,7 +182,6 @@ class ESEngine:
         if max(fitnesses) == min(fitnesses):
             # A flat population carries no ranking signal; the arbitrary
             # tie-break order would otherwise become a random parameter walk.
-            self.restore()
             return
         utils = centered_ranks(fitnesses)
         coef = self.lr / (len(fitnesses) * self.sigma)
@@ -117,7 +189,28 @@ class ESEngine:
             weight = coef * (utils[2 * pair] - utils[2 * pair + 1])
             for m, e in zip(self.master, eps):
                 m.add_(e, alpha=weight)
-        self.restore()
+        if self.trust_region:
+            dev = self.theta_dev()
+            if dev > self.trust_region:
+                shrink = self.trust_region / dev
+                for m, i in zip(self.master, self.init):
+                    m.copy_(i + (m - i) * shrink)
+        self.sync_live()
+
+
+def _member_delta_hook(
+    a_pop: torch.Tensor, b_pop: torch.Tensor, scaling: float, members: int
+) -> Callable:
+    def hook(module, args, output):
+        x = args[0]
+        assert x.shape[0] % members == 0, (
+            f"batch rows {x.shape[0]} not divisible by {members} members"
+        )
+        h = x.reshape(members, -1, x.shape[-1]).float()
+        delta = torch.bmm(torch.bmm(h, a_pop.transpose(1, 2)), b_pop.transpose(1, 2))
+        return output + (scaling * delta).reshape(output.shape).to(output.dtype)
+
+    return hook
 
 
 def _make_fitness(
@@ -159,34 +252,112 @@ def _score_population(
     tok: PreTrainedTokenizerBase,
     model: PreTrainedModel,
     gen_seed: int,
+    member_batch: int,
 ) -> tuple[list[float], list[int], int]:
     """Score all 2N antithetic members on one mini-batch.
 
-    Returns ``(fitnesses, completion_lengths, tokens)`` with the fitnesses
-    ordered [+ε₀, −ε₀, +ε₁, −ε₁, ...] — the layout ``ESEngine.update`` zips
-    its noise against. ``gen_seed`` is reused for every member (common random
-    numbers across the population), so decode noise partly cancels inside each
-    antithetic pair.
+    All +ε members run first in chunked batched generates, then all −ε
+    members through identically laid-out chunks with the same seeds —
+    ``generate`` reseeds per call, so aligned rows of a +/− chunk pair
+    consume the same sampling stream and decode noise partly cancels inside
+    each antithetic pair (common random numbers). Returns ``(fitnesses,
+    completion_lengths, tokens)`` with the fitnesses interleaved back to
+    [+ε₀, −ε₀, +ε₁, −ε₁, ...] — the layout ``ESEngine.update`` zips against.
     """
-    fits: list[float] = []
+    by_sign: dict[float, list[float]] = {1.0: [], -1.0: []}
     lengths: list[int] = []
     tokens = 0
-    for eps in noise:
-        for sign in (1.0, -1.0):
-            engine.perturb(eps, sign * engine.sigma)
-            gen = generate(
-                model,
-                tok,
-                prompts,
-                decode,
-                seed=gen_seed,
-                batch_size=len(prompts),
-                progress=False,
-            )
-            fits.append(fitness(prompts, gen.completions, columns))
-            lengths.extend(len(c) for c in gen.completions)
+    k = len(prompts)
+    for sign in (1.0, -1.0):
+        for start in range(0, len(noise), member_batch):
+            chunk = noise[start : start + member_batch]
+            chunk_prompts = [p for _ in chunk for p in prompts]
+            with engine.population(chunk, sign):
+                gen = generate(
+                    model,
+                    tok,
+                    chunk_prompts,
+                    decode,
+                    seed=gen_seed,
+                    batch_size=len(chunk_prompts),
+                    progress=False,
+                )
             tokens += gen.tokens
+            lengths.extend(len(c) for c in gen.completions)
+            for j in range(len(chunk)):
+                member = gen.completions[j * k : (j + 1) * k]
+                by_sign[sign].append(fitness(prompts, member, columns))
+    fits = [f for pair in zip(by_sign[1.0], by_sign[-1.0]) for f in pair]
     return fits, lengths, tokens
+
+
+def _warm_start_tokens(adapter: str) -> int | None:
+    """The token bill of the run that produced ``adapter`` — checkpoints live
+    inside run dirs, so the budget file sits next to or one level above."""
+    for d in (Path(adapter), Path(adapter).parent):
+        budget = d / "token_budget.json"
+        if budget.exists():
+            tokens = json.loads(budget.read_text()).get("num_tokens")
+            # TRL reports token counts as floats; budgets sum as ints.
+            return None if tokens is None else int(tokens)
+    return None
+
+
+def _load_es_model(cfg: RunConfig) -> tuple[PreTrainedModel, int | None]:
+    """Load the policy the ES leg perturbs and report what it already cost.
+
+    Returns ``(model, warm_tokens)``: a cold base + fresh LoRA (``warm_tokens``
+    None), or a warm start from a trained adapter whose own run's token bill is
+    charged to this run's budget. Same loader as eval, so the saved adapter's
+    module tree matches what eval (and TRL) reload — wrapper architectures
+    otherwise silently load zero adapter weights (see eval.runner._model_class);
+    the warm-start path rides the same loader's adapter branch.
+    """
+    if cfg.es_init_adapter:
+        model = load_model(cfg.model, cfg.es_init_adapter)
+        warm_tokens = _warm_start_tokens(cfg.es_init_adapter)
+        if warm_tokens is None:
+            logger.warning(
+                "no token_budget.json found next to %s — the warm-start "
+                "tokens go uncharged and this budget understates the true cost",
+                cfg.es_init_adapter,
+            )
+    else:
+        model = load_model(cfg.model, "base")
+        model = get_peft_model(model, lora_config(cfg.model, cfg.lora_r, cfg.lora_alpha))
+        warm_tokens = None
+    model.eval()  # dropout off: each member must score exactly the policy it perturbs
+    return model, warm_tokens
+
+
+def _log_calibration(engine: ESEngine, cfg: RunConfig, num_rows: int) -> None:
+    """Startup line on the σ/θ_init geometry, plus a warning when a warm-start's
+    per-step noise norm (~σ·√P) dwarfs the init it should refine — at which
+    point the first population erases the adapter it started from."""
+    noise_norm = cfg.es_sigma * math.sqrt(engine.num_params)
+    init_norm = engine.init_norm()
+    logger.info(
+        "ES: task=%s model=%s rows=%d population=%dx2 sigma=%g lr=%g steps=%d "
+        "init_norm=%.2f step_noise_norm=%.2f trust_region=%s",
+        cfg.task,
+        cfg.model,
+        num_rows,
+        cfg.es_population,
+        cfg.es_sigma,
+        cfg.es_lr,
+        cfg.es_steps,
+        init_norm,
+        noise_norm,
+        cfg.es_trust_region or "off",
+    )
+    if cfg.es_init_adapter and noise_norm > init_norm:
+        logger.warning(
+            "per-step noise norm %.1f exceeds the warm-start adapter norm %.1f "
+            "— σ this large is known to bury the init under the perturbations; "
+            "lower --es-sigma until σ·√P sits well below the adapter norm",
+            noise_norm,
+            init_norm,
+        )
 
 
 def run_es(cfg: RunConfig) -> Path:
@@ -205,14 +376,15 @@ def run_es(cfg: RunConfig) -> Path:
     fitness = _make_fitness(cfg, spec)
 
     tok = load_tokenizer(cfg.model)
-    # Same loader as eval, so the saved adapter's module tree matches what
-    # eval (and TRL) reload — wrapper architectures otherwise silently load
-    # zero adapter weights (see eval.runner._model_class).
-    model = load_model(cfg.model, "base")
-    model = get_peft_model(model, lora_config(cfg.model, cfg.lora_r, cfg.lora_alpha))
-    model.eval()  # dropout off: each member must score exactly the policy it perturbs
+    model, warm_tokens = _load_es_model(cfg)
 
-    engine = ESEngine(model, sigma=cfg.es_sigma, lr=cfg.es_lr, seed=cfg.seed)
+    engine = ESEngine(
+        model,
+        sigma=cfg.es_sigma,
+        lr=cfg.es_lr,
+        seed=cfg.seed,
+        trust_region=cfg.es_trust_region,
+    )
     decode = DecodeParams(
         decode="greedy" if cfg.es_greedy_fitness or cfg.temperature <= 0 else "sample",
         temperature=cfg.temperature,
@@ -224,17 +396,10 @@ def run_es(cfg: RunConfig) -> Path:
     out = Path(cfg.output_dir)
     out.mkdir(parents=True, exist_ok=True)
     cfg.save(out / "run_config.json")
+    history_path = out / "history.jsonl"
+    history_path.unlink(missing_ok=True)
 
-    logger.info(
-        "ES: task=%s model=%s rows=%d population=%dx2 sigma=%g lr=%g steps=%d",
-        cfg.task,
-        cfg.model,
-        len(train_ds),
-        cfg.es_population,
-        cfg.es_sigma,
-        cfg.es_lr,
-        cfg.es_steps,
-    )
+    _log_calibration(engine, cfg, len(train_ds))
 
     # The mini-batch picker rides the optimizer seed (like GRPO's data order),
     # not data_seed — the train slice itself is already pinned by data_seed.
@@ -254,24 +419,46 @@ def run_es(cfg: RunConfig) -> Path:
 
         noise = engine.sample_noise(step, cfg.es_population)
         # One sampling seed per step (distinct prime stride keeps it off the
-        # noise stream), reused for every member inside _score_population.
+        # noise stream), shared by every chunk inside _score_population.
         gen_seed = cfg.seed * _GEN_SEED_STRIDE + step
         fits, lengths, tokens = _score_population(
-            engine, noise, prompts, columns, fitness, decode, tok, model, gen_seed
+            engine,
+            noise,
+            prompts,
+            columns,
+            fitness,
+            decode,
+            tok,
+            model,
+            gen_seed,
+            cfg.es_member_batch,
         )
         total_tokens += tokens
         engine.update(noise, fits)
 
         step_times.append(time.perf_counter() - t_step)
+        record = {
+            "step": step + 1,
+            "fitness_mean": sum(fits) / len(fits),
+            "fitness_best": max(fits),
+            "mean_len": sum(lengths) / len(lengths),
+            "tokens": total_tokens,
+            "theta_dev": engine.theta_dev(),
+            "step_time": step_times[-1],
+        }
+        with history_path.open("a") as fh:
+            fh.write(json.dumps(record) + "\n")
         logger.info(
-            "step %d/%d fitness mean=%.4f best=%.4f mean_len=%.0f tokens=%d step_time=%.1f",
+            "step %d/%d fitness mean=%.4f best=%.4f mean_len=%.0f tokens=%d "
+            "theta_dev=%.2f step_time=%.1f",
             step + 1,
             cfg.es_steps,
-            sum(fits) / len(fits),
-            max(fits),
-            sum(lengths) / len(lengths),
+            record["fitness_mean"],
+            record["fitness_best"],
+            record["mean_len"],
             total_tokens,
-            step_times[-1],
+            record["theta_dev"],
+            record["step_time"],
         )
         if cfg.save_steps and (step + 1) % cfg.save_steps == 0 and step + 1 < cfg.es_steps:
             model.save_pretrained(str(out / f"checkpoint-{step + 1}"))
@@ -280,11 +467,12 @@ def run_es(cfg: RunConfig) -> Path:
 
     runtime = time.perf_counter() - t_start
     budget = TokenBudgetLog(
-        num_tokens=total_tokens,
+        num_tokens=total_tokens + (warm_tokens or 0),
         global_step=cfg.es_steps,
         train_runtime=runtime,
         mean_step_time=sum(step_times) / len(step_times) if step_times else None,
         tokens_per_second=total_tokens / runtime if runtime else None,
+        warm_start_tokens=warm_tokens,
         source="es_loop",
     )
     if torch.cuda.is_available():

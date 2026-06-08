@@ -85,6 +85,9 @@ class RunConfig:
     es_steps: int = 200  # ES iterations (ES has no epoch notion)
     es_eval_batch: int = 8  # prompts scored per member per step
     es_greedy_fitness: bool = False  # greedy instead of temperature-matched sampling
+    es_member_batch: int = 8  # members per batched generate call (VRAM lever)
+    es_init_adapter: str | None = None  # warm-start adapter; its run's tokens get charged
+    es_trust_region: float = 0.0  # cap on ||theta - theta_init||_2 (0 = off)
 
     # Logging.
     verbose: bool = False
@@ -221,6 +224,26 @@ def _build_parser() -> argparse.ArgumentParser:
         help="prompts scored per member per ES step",
     )
     flag("--es-greedy-fitness", help="greedy fitness decoding (low-variance ablation)")
+    opt(
+        "--es-member-batch",
+        default=d.es_member_batch,
+        type=int,
+        help="population members per batched generate call (VRAM lever)",
+    )
+    opt(
+        "--es-init-adapter",
+        default=d.es_init_adapter,
+        metavar="CKPT",
+        help="warm-start the ES master from a trained adapter; that run's "
+        "tokens are charged to this run's budget",
+    )
+    opt(
+        "--es-trust-region",
+        default=d.es_trust_region,
+        type=float,
+        metavar="R",
+        help="project ||theta - theta_init||_2 back to R after each step (0 = off)",
+    )
 
     flag("-v", "--verbose")
     opt("--logging-steps", default=d.logging_steps, type=int)

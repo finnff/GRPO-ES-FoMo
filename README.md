@@ -5,9 +5,9 @@ Strategies** (gradient-free, perturb-and-rank), selected with `--method`. Same p
 verifiable reward, same config schema — only the inner optimizer loop differs.
 
 Design: [GRPO_ES_ARCHITECTURE.md](GRPO_ES_ARCHITECTURE.md). Current state: the shared spine
-(config / tasks / rewards / token budget), the **GRPO leg**, a first cut of the **ES leg**
-(antithetic LoRA-subspace ES — population batching, warm-start and the trust region still
-to come), two generated smoke tasks (`toy`, `countdown`), two benchmark tasks (`gsm8k`,
+(config / tasks / rewards / token budget), the **GRPO leg**, the **ES leg** (antithetic
+LoRA-subspace ES with a batched population forward, warm-start and a parameter-space trust
+region), two generated smoke tasks (`toy`, `countdown`), two benchmark tasks (`gsm8k`,
 `mmlu_pro`), two instruction-following tasks (`ifeval`, `ifbench`), the held-out
 **eval runner** (KL-to-base, paired significance tests), a small model alias ladder, and
 the **hub-env adapter** (`--task env:<owner>/<env>`).
@@ -56,11 +56,25 @@ instead of TRL (`configs/smoke_es.toml` is the seconds-scale wiring check): each
 draws `--es-population` antithetic perturbation pairs in the LoRA parameter space, scores
 all 2N members on an `--es-eval-batch`-prompt mini-batch with the exact weighted reward
 GRPO trains on, and moves the adapter along the rank-weighted noise sum (`--es-sigma`,
-`--es-lr`, `--es-steps`). Fitness decoding matches the training temperature with one
-shared sampling seed per step, so decode noise partly cancels inside each antithetic
-pair (`--es-greedy-fitness` for the low-variance ablation). First cut: members generate
-sequentially — the batched population forward, warm-start and the trust region are the
-planned follow-ups (architecture §6).
+`--es-lr`, `--es-steps`). The population rides the batch dimension: a forward hook on each
+LoRA layer adds per-member deltas via grouped `bmm`, so one `generate` call scores
+`--es-member-batch` members at once instead of looping. Fitness decoding matches the
+training temperature; the +ε and −ε passes share their sampling seeds and layout, so
+decode noise partly cancels inside each antithetic pair (`--es-greedy-fitness` for the
+low-variance ablation). Each run also writes a per-step `history.jsonl` next to the
+budget.
+
+Naive cold-start ES at large σ is a known reward-hacker: on dense checkers it collapses
+into degenerate token-spam, which lives at adapter norms an order of magnitude above any
+honest solution (the tell is mean completion length, not the score). Two levers contain
+it. `--es-trust-region R` projects the cumulative LoRA delta back onto `‖θ−θ_init‖₂ ≤ R`
+after every step — the weight-space analogue of GRPO's KL anchor, and it removes the spam
+basin geometrically (watch `theta_dev` in the step logs to see whether it binds). And
+`--es-init-adapter` warm-starts the master from a trained adapter — "ES as refiner" — with
+that run's tokens charged to this run's `token_budget.json` (`warm_start_tokens`) so the
+cost comparison stays honest. σ must be recalibrated when warm-starting (a perturbation's
+norm is ~σ·√P and must stay well below the init's norm — the startup log warns);
+`configs/es_warm_tr.toml` is the calibrated recipe with the rules in its comments.
 
 ## Models
 

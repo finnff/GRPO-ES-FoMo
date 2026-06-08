@@ -22,6 +22,11 @@ class TokenBudgetLog:
     mean_step_time: float | None = None
     tokens_per_second: float | None = None
     peak_vram_bytes: int | None = None
+    # Tokens the warm-start adapter's own run consumed (ES --es-init-adapter).
+    # Already included in num_tokens — a warm-started run must cost what it
+    # actually cost — broken out so the split stays visible. The runtime and
+    # throughput fields describe this run's loop only.
+    warm_start_tokens: int | None = None
     source: str = "trl_logs"
 
     def save(self, path: Path) -> None:

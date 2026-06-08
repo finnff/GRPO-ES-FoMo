@@ -14,7 +14,7 @@ toward and the design decisions behind it. See [README.md](README.md) for instal
 ## 0. Status
 
 **Built:** the shared spine, the GRPO leg, the held-out eval runner, the benchmark and
-instruction-following tasks, the hub-env adapter, and a first cut of the ES leg.
+instruction-following tasks, the hub-env adapter, and the ES leg.
 
 - `config/` — `RunConfig` (one run = one config), CLI + TOML defaults, `run_config.json` stamped
   with the git commit.
@@ -28,13 +28,14 @@ instruction-following tasks, the hub-env adapter, and a first cut of the ES leg.
   plus the held-out **runner** (`runner.py`): disjoint-slice generation, KL-to-base (`kl.py`), and
   paired significance tests (`stats.py`).
 - `methods/grpo.py` — the GRPO leg (thin TRL `GRPOTrainer` wrapper).
-- `methods/es.py` — the ES leg, **first cut**: antithetic LoRA-subspace OpenAI-ES, forward passes
-  only. The batched population forward, warm-start, and the trust region are still to come.
+- `methods/es.py` — the ES leg: antithetic LoRA-subspace OpenAI-ES, forward passes only, with the
+  grouped-bmm batched population forward, warm-start (`--es-init-adapter`), and the parameter-space
+  trust region (`--es-trust-region`) all in place.
 
-**Planned (designed here, not yet implemented):** the `simpleqa` judge task and the ES
-follow-ups — the grouped-bmm batched population forward, warm-start, and trust-region projection
-(§6). The sections below describe how the remaining pieces are **intended** to slot onto the
-existing spine; planned components are marked *(planned)* where the distinction matters.
+**Planned (designed here, not yet implemented):** the `simpleqa` judge task, the eval `aggregate`
+roll-up, and the ES coherence gate (§6). The sections below describe how the remaining pieces are
+**intended** to slot onto the existing spine; planned components are marked *(planned)* where the
+distinction matters.
 
 ---
 
@@ -70,28 +71,28 @@ legs generate locally; there is no rollout-harness seam — see §4.2).
  │           weight-0 shadows (built) + soft-overlong  (planned)      │
  │ eval/     rubric scoring outside loop · held-out runner ·          │
  │           KL-to-base · stats  (built);  aggregate  (planned)       │
- │ metrics/  forward-token budget from TRL logs  (built);            │
- │           FLOPs estimate · warm-start charge  (planned)            │
+ │ metrics/  forward-token budget from TRL logs  (built);             │
+ │           FLOPs estimate  (planned) · warm-start charge  (built)   │
  └────────────────────────────────────────────────────────────────────┘
        │                                      │
        ▼                                      ▼
  ┌──────────────────────────┐    ┌──────────────────────────────────┐
- │ methods/grpo.py  (built) │    │ methods/es.py  (planned)         │
+ │ methods/grpo.py  (built) │    │ methods/es.py  (built)           │
  │ TRL GRPOTrainer wrapper  │    │ ESEngine: batched antithetic     │
- │ KL-to-base β=0.04        │    │ population via grouped-bmm LoRA   │
- │ arch-aware LoRA targets  │    │ hook · rank-norm · warm-start +   │
- │ bf16 load                │    │ trust region + coherence gate     │
+ │ KL-to-base β=0.04        │    │ population via grouped-bmm LoRA  │
+ │ arch-aware LoRA targets  │    │ hook · rank-norm · warm-start +  │
+ │ bf16 load                │    │ trust region; coherence gate TBD │
  └──────────────────────────┘    └──────────────────────────────────┘
 ```
 
 **The two contracts both legs agree on:**
-- `tasks.base.TaskSpec` — prompt builder + dataset split + rubric name (and, once the eval runner
-  lands, the held-out slice spec: `eval_split/seed/offset/size`, decode caps, `metric_label`).
-  Putting the eval slice spec *on the task* is what is meant to keep train/holdout disjointness a
+- `tasks.base.TaskSpec` — prompt builder + dataset split + rubric name, plus the held-out slice
+  spec the eval runner consumes (`eval_split/seed/offset/size`, decode caps, `metric_label`).
+  Putting the eval slice spec *on the task* keeps train/holdout disjointness a
   property of the spine, not of individual eval scripts.
 - `verifiers` `Rubric.score_rollout(state) -> float` — the single scoring interface. The same
-  rubric object is wrapped as a TRL `reward_func` (`rewards/trl_bridge.py`) today, and is intended
-  to be consumed directly by the ES fitness loop when that leg lands.
+  rubric object is wrapped as a TRL `reward_func` (`rewards/trl_bridge.py`) for GRPO and consumed
+  directly by the ES fitness loop (`methods/es.py:_make_fitness`).
 
 Everything above the method split is written once; below it live two genuinely different loops.
 
@@ -110,24 +111,23 @@ Built today:
 | Module | Responsibility |
 |---|---|
 | `config/run_config.py` | `RunConfig` dataclass + argparse + `--config` TOML defaults; saves `run_config.json` (with git commit) per run |
-| `tasks/` | one file per task; `base.py` (`TaskSpec` + `build_dataset`), `registry.py` (`SPECS`/`LOADERS`), the generated `toy`/`countdown` loaders, shared `prompts.py` |
+| `tasks/` | one file per task; `base.py` (`TaskSpec` + `build_dataset`), `registry.py` (`SPECS`/`LOADERS`), the `toy`/`countdown`/`gsm8k`/`mmlu_pro`/`ifeval`/`ifbench` loaders, `from_env.py` (hub-env adapter §4.2: `task_from_environment`, `HubEnvClient`, `RemoteEnvRubric`), shared `prompts.py` |
 | `rewards/` | `registry.py` (`get_rubric` + `make_trl_reward_funcs`), `trl_bridge.py` (rubric→`reward_func`, graded format reward), `toy_rubric.py`, `countdown_rubric.py` |
 | `methods/grpo.py` | thin TRL `GRPOTrainer` wrapper; arch-aware LoRA targets; bf16 load |
+| `methods/es.py` | `ESEngine`: antithetic population over a grouped-bmm forward hook, rank-normalized update, parameter-space trust region, warm-start token charge |
 | `methods/callbacks.py` | compact one-line-per-step metrics logging |
-| `eval/metrics.py` | score a batch of completions through the same adapter the trainer uses |
-| `metrics/budget.py` | forward-token budget + throughput, extracted from TRL's `log_history` |
-| `run.py` | entrypoint: `--method grpo --task ... --model ...` |
-| `scripts/` | `setup_env.sh` (install); `configs/*.toml` hold run presets |
+| `models.py` | model aliases + per-arch LoRA-target resolution (`lora_config`) |
+| `eval/` | `metrics.py` (score completions through the trainer's adapter), `runner.py` (held-out generation, no chat template), `kl.py` (KL-to-base), `stats.py` (paired significance) |
+| `metrics/budget.py` | forward-token budget + throughput (TRL `log_history` and the ES loop) |
+| `run.py` | entrypoint: `--method grpo\|es --task ... --model ...` |
+| `scripts/` | `setup_env.sh` (install); `prime_env_worker.py` + `setup_prime_venv.sh` (the isolated `.venv-prime` hub-env worker); `configs/*.toml` run presets |
 
 Planned modules (described in §4–§8):
 
 | Module | Intended responsibility |
 |---|---|
-| `methods/es.py` | `ESEngine`: antithetic population, rank-normalized update, grouped-bmm forward hook, trust-region projection, coherence gate, warm-start token charge |
-| `tasks/from_env.py` | hub-env adapter (§4.2): `task_from_environment` / `register_environment_task`, `HubEnvClient`, `RemoteEnvRubric` |
-| `eval/runner.py`, `eval/kl.py`, `eval/stats.py`, `eval/aggregate.py` | held-out generation (no chat template), KL-to-base, significance stats, aggregation |
-| `models.py` | model aliases + per-arch LoRA-target notes |
-| `scripts/prime_env_worker.py`, `setup_prime_venv.sh` | the isolated `.venv-prime` worker for hub envs |
+| `eval/aggregate.py` | roll per-run eval JSON up into the cross-run GRPO-vs-ES comparison table |
+| `methods/es.py` (coherence gate) | optional zlib-ratio degeneracy gate multiplying each member's fitness ∈ [0,1] — the one ES extra still unbuilt (§6) |
 
 ## 4. Task layer — builtins + the PrimeIntellect hub adapter
 
@@ -140,16 +140,16 @@ Built today, both generated on the fly:
 | `toy` | exact match on last-letter concatenation | wiring smoke test |
 | `countdown` | reach a target using each operand exactly once (safe AST eval) | first non-trivial reward |
 
-Planned benchmark lineup, with the reward shaping each is meant to use:
+Benchmark lineup, with the reward shaping each uses (`simpleqa` still planned):
 
-| `--task` | Reward (planned) | Why it's shaped this way |
+| `--task` | Reward | Why it's shaped this way |
 |---|---|---|
 | `gsm8k` | `verifiers` MathRubric (boxed) | R1 `<think>/<answer>` scaffold + graded format reward |
 | `mmlu_pro` | MCQ letter rubric (exact letter) | a MathRubric false-negatives on MCQ forms (`C.`, `**C**`) → bad advantage; it would ride as a weight-0 shadow |
 | `ifeval` / `ifbench` | **dense** instruction-following *rate* (vendored Google/AllenAI checkers) | an all-or-nothing prompt-level pass collapses within-group variance → no GRPO gradient, flat ES fitness. Strict drives the gradient; loose rides as a weight-0 shadow |
-| `simpleqa` | LLM-judge (OpenRouter) | no local gold-match exists; every rollout is a paid judge call → eval-oriented |
+| `simpleqa` *(planned)* | LLM-judge (OpenRouter) | no local gold-match exists; every rollout is a paid judge call → eval-oriented |
 
-The intended rule for tasks graded on the **raw response** (`ifeval`, `ifbench`, `simpleqa`, hub
+The rule for tasks graded on the **raw response** (`ifeval`, `ifbench`, `simpleqa`, hub
 envs): set `r1_template=False` — no `<think>/<answer>` scaffold, format reward auto-dropped — so the
 template can't corrupt what the checker/judge sees.
 
@@ -208,33 +208,34 @@ inference engine) anywhere in the codebase**:
   budget** logged in `metrics/`, with bf16 HF `generate` keeping both legs' numerics identical
   (which matters for KL-to-base and the Goodhart gap).
 
-ES generation throughput is intended to be solved *inside* PyTorch via the **grouped-bmm population
-hook** (§6): the whole population batched into one `generate` call rather than a sequential
+ES generation throughput is solved *inside* PyTorch via the **grouped-bmm population
+hook** (§6): a chunk of the population batched into one `generate` call rather than a sequential
 population loop. The same reasoning excludes Unsloth from the head-to-head (its fused attention
 replaces the PEFT LoRA `Linear` the hook attaches to, and 4-bit confounds KL/Goodhart). A GRPO-only
 7–9B run that ever needs a fast engine would put it in an isolated venv, off the comparison path.
 
 ## 6. The two legs
 
-GRPO is built; the ES column describes the intended design.
+Both legs are built; the table contrasts their mechanics.
 
-| | GRPO (`methods/grpo.py`, built) | ES (`methods/es.py`, planned) |
+| | GRPO (`methods/grpo.py`, built) | ES (`methods/es.py`, built) |
 |---|---|---|
 | Engine | TRL `GRPOTrainer` (rollouts owned by TRL) | custom `ESEngine` loop |
 | Pass | forward + backward | forward-only |
 | Params | LoRA (arch-aware targets: `o_proj` vs `out_proj` …; `--no-peft` for full FT) | same LoRA subspace — perturbs the adapter's `(A,B)` only |
-| Population | G=`--num-generations` rollouts/prompt | 2N antithetic members in one batched `generate`: a forward hook computes per-member `x·Aᵢᵀ·Bᵢᵀ` via grouped `bmm` with the adapter disabled |
+| Population | G=`--num-generations` rollouts/prompt | 2N antithetic members across batched `generate` calls (`--es-member-batch`): a forward hook adds per-member `x·Aᵢᵀ·Bᵢᵀ` via grouped `bmm` with the adapter disabled |
 | Update | group-relative advantage + clip | rank-normalized utilities → weighted noise sum |
-| Stay-near-base | KL-to-base in the objective (β=0.04) | param-space trust region: cap ‖cumulative LoRA delta‖₂ from the start point and project back each step — the weight-space analogue of the KL anchor |
-| Init | base + zero-delta LoRA | cold, or warm-start from a GRPO checkpoint (its training tokens charged to the ES budget) |
-| Anti-Goodhart extras | (KL does the work) | optional coherence gate: zlib-ratio degeneracy gate on each member's greedy pass, multiplying fitness ∈ [0,1] |
+| Stay-near-base | KL-to-base in the objective (β=0.04) | param-space trust region (`--es-trust-region`): cap ‖cumulative LoRA delta‖₂ from the start point and project back each step — the weight-space analogue of the KL anchor |
+| Init | base + zero-delta LoRA | cold, or warm-start from a GRPO checkpoint (`--es-init-adapter`, its training tokens charged to the ES budget) |
+| Anti-Goodhart extras | (KL does the work) | the trust region above; *(planned)* coherence gate — zlib-ratio degeneracy gate on each member's greedy pass, multiplying fitness ∈ [0,1] |
 
-The ES extras anticipate a known failure mode rather than being speculative: naïve ES tends to
-reward-hack dense checkers into token-spam. The planned mitigation is **warm-start + trust region +
+The ES extras target a known failure mode rather than being speculative: naïve ES tends to
+reward-hack dense checkers into token-spam. The mitigation is **warm-start + trust region +
 small σ** (σ is only meaningful relative to the current delta norm, so warm-starting without
-rescaling σ is expected to reproduce the collapse), and the intended honest hack-detector is **mean
-completion length**, not (ES − base). Cold-start defaults are expected to be roughly
-`--es-population 32 --es-sigma 0.03 --es-lr 0.05`; these will be validated as the leg is built.
+rescaling σ reproduces the collapse — the startup log warns when σ·√P dwarfs the init norm), and the
+honest hack-detector is **mean completion length**, not (ES − base). The calibrated refiner recipe
+lives in `configs/es_warm_tr.toml`; cold-start defaults are roughly
+`--es-population 32 --es-sigma 0.03 --es-lr 0.05` (still to be validated on the full ladder).
 
 `--seed` is intended to drive the optimizer (ES noise / GRPO trainer) while `--data-seed`
 (default 0, pinned) drives the train-slice shuffle, so a seed sweep keeps the split fixed and the
@@ -258,7 +259,7 @@ per-architecture so both legs run on every rung with no per-model code.
 
 ## 8. Eval & fairness (the part that catches lies)
 
-The fairness design (the eval runner is built; the ES-side accounting lands with the ES follow-ups):
+The fairness design (the eval runner and the ES-side token accounting — warm-start charge included — are built):
 
 - **Held-out is the only number that counts.** Train on one slice, score on a disjoint slice — this
   is what exposes reward-hacking that training fitness hides. The slice spec lives on
@@ -282,7 +283,7 @@ The fairness design (the eval runner is built; the ES-side accounting lands with
 | **GRPO via TRL `GRPOTrainer`; ES as a separate custom loop** | Share reward/eval/data only; the rollout engines are two genuinely different beasts and pretending otherwise would leak the spine. GRPO cost accounting derives from TRL's reported rollout counts (we don't drive its loop). |
 | **`verifiers` as scoring/parsing library only** (pinned `0.1.14`) | One rubric object serves both legs; no Environment ever drives rollout. Prompt builders live in `tasks/`, guaranteeing identical prompts across legs and tasks. |
 | **No inference engine; bf16 HF `generate` for both legs** | See §5 — fairness via token budget + identical numerics; throughput via the micro-batch lever (GRPO) and the grouped-bmm population hook (ES). |
-| **ES population batched in the forward** (grouped-bmm hook on PEFT LoRA layers) | Intended to remove ES's multiplicative population penalty without custom kernels or an engine; plain batched matmuls. |
+| **ES population batched in the forward** (grouped-bmm hook on PEFT LoRA layers) | Removes ES's multiplicative population penalty without custom kernels or an engine; plain batched matmuls. |
 | **Hub envs through an isolated `.venv-prime` + worker subprocess** | Install extras can't isolate dependency pins; a venv + JSON-lines bridge can. Core pins never move. |
 | **Stock env rubrics replaceable via `rubric_override`** | Dense/MCQ rubric choices are gradient-survival decisions; silent plug-and-play would regress them. |
 | **Vendored `_ifeval`/`_ifbench` checkers** | Escapes the verifiers-version dependency pull; the checkers are the reward ground truth and must not drift. |
