@@ -19,14 +19,12 @@ from trl import GRPOConfig, GRPOTrainer
 from grpo_es.config.run_config import RunConfig
 from grpo_es.methods.callbacks import CompactMetricsCallback
 from grpo_es.metrics.budget import extract_trl_token_budget
-from grpo_es.models import lora_targets_for
+from grpo_es.models import lora_config
 from grpo_es.rewards.registry import make_trl_reward_funcs
 from grpo_es.tasks.base import build_dataset
 from grpo_es.tasks.registry import get_task_spec
 
 logger = logging.getLogger(__name__)
-
-_LORA_DROPOUT = 0.05
 
 
 def _check_generation_batching(cfg: RunConfig) -> None:
@@ -76,14 +74,7 @@ def _training_args(cfg: RunConfig) -> GRPOConfig:
 def _peft_config(cfg: RunConfig) -> LoraConfig | None:
     if not cfg.use_peft:
         return None
-    return LoraConfig(
-        r=cfg.lora_r,
-        lora_alpha=cfg.lora_alpha,
-        lora_dropout=_LORA_DROPOUT,
-        bias="none",
-        task_type="CAUSAL_LM",
-        target_modules=lora_targets_for(cfg.model),
-    )
+    return lora_config(cfg.model, cfg.lora_r, cfg.lora_alpha)
 
 
 class QuietGRPOTrainer(GRPOTrainer):

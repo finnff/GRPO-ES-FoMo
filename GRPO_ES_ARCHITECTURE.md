@@ -13,22 +13,28 @@ toward and the design decisions behind it. See [README.md](README.md) for instal
 
 ## 0. Status
 
-**Built:** the shared spine plus the GRPO leg.
+**Built:** the shared spine, the GRPO leg, the held-out eval runner, the benchmark and
+instruction-following tasks, the hub-env adapter, and a first cut of the ES leg.
 
 - `config/` — `RunConfig` (one run = one config), CLI + TOML defaults, `run_config.json` stamped
   with the git commit.
-- `tasks/` — `TaskSpec` contract + the generated smoke tasks `toy` and `countdown`.
+- `tasks/` — `TaskSpec` contract + the generated smoke tasks `toy`/`countdown`, the benchmark
+  tasks `gsm8k`/`mmlu_pro`, the instruction-following tasks `ifeval`/`ifbench`, and the
+  PrimeIntellect hub-env adapter (`env:<owner>/<env>`, behind an isolated `.venv-prime` worker).
 - `rewards/` — verifiers `Rubric` → TRL `reward_func` bridge, graded `<think>/<answer>` format
-  reward, rubric registry.
-- `metrics/budget.py` — forward-token budget pulled from TRL's logs.
-- `eval/metrics.py` — rubric scoring outside the training loop (same scoring path as training).
+  reward, rubric registry (built-in + dynamic hub rubrics).
+- `metrics/budget.py` — forward-token budget pulled from TRL's logs (and the ES loop).
+- `eval/` — rubric scoring outside the training loop (`metrics.py`, same scoring path as training)
+  plus the held-out **runner** (`runner.py`): disjoint-slice generation, KL-to-base (`kl.py`), and
+  paired significance tests (`stats.py`).
 - `methods/grpo.py` — the GRPO leg (thin TRL `GRPOTrainer` wrapper).
+- `methods/es.py` — the ES leg, **first cut**: antithetic LoRA-subspace OpenAI-ES, forward passes
+  only. The batched population forward, warm-start, and the trust region are still to come.
 
-**Planned (designed here, not yet implemented):** the **ES leg** (`methods/es.py`), the held-out
-eval *runner* and KL-to-base, the benchmark tasks (`gsm8k`, `mmlu_pro`, `ifeval`, `ifbench`,
-`simpleqa`), and the PrimeIntellect hub-env adapter. The sections below describe how these are
-**intended** to slot onto the existing spine; planned components are marked *(planned)* where the
-distinction matters.
+**Planned (designed here, not yet implemented):** the `simpleqa` judge task and the ES
+follow-ups — the grouped-bmm batched population forward, warm-start, and trust-region projection
+(§6). The sections below describe how the remaining pieces are **intended** to slot onto the
+existing spine; planned components are marked *(planned)* where the distinction matters.
 
 ---
 
@@ -56,15 +62,14 @@ legs generate locally; there is no rollout-harness seam — see §4.2).
        │     saved as run_config.json with the git commit
        ▼
  ┌────────────────────────────────────────────────────────────────────┐
- │ tasks/    TaskSpec + loaders: toy · countdown  (built);            │
- │           gsm8k · mmlu_pro · ifeval · ifbench · simpleqa ·         │
- │           env:<owner>/<env> (hub)  (planned)                       │
+ │ tasks/    TaskSpec + loaders: toy · countdown · gsm8k ·            │
+ │           mmlu_pro · ifeval · ifbench · env:<owner>/<env>          │
+ │           (hub)  (built);   simpleqa  (planned)                    │
  │ rewards/  verifiers Rubric contract: task rubric + graded format;  │
  │           trl_bridge wraps a rubric as a TRL reward_func  (built). │
- │           weight-0 shadows + soft-overlong  (planned)              │
- │ eval/     rubric scoring outside the loop  (built);                │
- │           held-out runner (disjoint slice) · KL-to-base · stats    │
- │           · aggregate  (planned)                                   │
+ │           weight-0 shadows (built) + soft-overlong  (planned)      │
+ │ eval/     rubric scoring outside loop · held-out runner ·          │
+ │           KL-to-base · stats  (built);  aggregate  (planned)       │
  │ metrics/  forward-token budget from TRL logs  (built);            │
  │           FLOPs estimate · warm-start charge  (planned)            │
  └────────────────────────────────────────────────────────────────────┘
@@ -148,11 +153,11 @@ The intended rule for tasks graded on the **raw response** (`ifeval`, `ifbench`,
 envs): set `r1_template=False` — no `<think>/<answer>` scaffold, format reward auto-dropped — so the
 template can't corrupt what the checker/judge sees.
 
-### 4.2 The hub-env adapter (`--task env:<owner>/<env>`) — *(planned)*
+### 4.2 The hub-env adapter (`--task env:<owner>/<env>`) — *(built)*
 
-The spine speaks the `verifiers` data model natively, so the intent is that any **single-turn** env
+The spine speaks the `verifiers` data model natively, so any **single-turn** env
 from the [PrimeIntellect Environments Hub](https://app.primeintellect.ai/dashboard/environments)
-can be consumed plug-and-play — *dataset + rubric only*.
+is consumed plug-and-play — *dataset + rubric only*.
 
 ```
  grpo-es venv (core pins: trl, transformers 5.x, verifiers==0.1.14, openai pin)
@@ -253,16 +258,16 @@ per-architecture so both legs run on every rung with no per-model code.
 
 ## 8. Eval & fairness (the part that catches lies)
 
-The fairness design — most of it planned alongside the eval runner and the ES leg:
+The fairness design (the eval runner is built; the ES-side accounting lands with the ES follow-ups):
 
 - **Held-out is the only number that counts.** Train on one slice, score on a disjoint slice — this
-  is what is meant to expose reward-hacking that training fitness hides. The slice spec lives on
-  `TaskSpec`. *(held-out runner planned; rubric scoring itself is built in `eval/metrics.py`.)*
-- **KL-to-base** is intended to live in `eval/kl.py`, computed identically for both legs and never
+  is what exposes reward-hacking that training fitness hides. The slice spec lives on
+  `TaskSpec`. *(built: held-out runner in `eval/runner.py`, rubric scoring in `eval/metrics.py`.)*
+- **KL-to-base** lives in `eval/kl.py`, computed identically for both legs and never
   inside a method — an inconsistent estimator would bias the Goodhart comparison at every rung.
-  *(planned.)*
+  *(built.)*
 - **No chat template in the eval runner** — a reproducibility invariant, so historical numbers
-  reproduce up to the greedy-bf16 nondeterminism floor. *(planned.)*
+  reproduce up to the greedy-bf16 nondeterminism floor. *(built.)*
 - **Forward-token budget** (`metrics/budget.py`, built) is the intended cost currency (ES = many
   cheap forwards; GRPO = fewer forwards + backward): TRL's rollout counts on the GRPO side, the
   population×tokens count on the ES side, and a warm-started ES run charged the GRPO tokens it

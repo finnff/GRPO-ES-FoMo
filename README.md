@@ -5,11 +5,12 @@ Strategies** (gradient-free, perturb-and-rank), selected with `--method`. Same p
 verifiable reward, same config schema — only the inner optimizer loop differs.
 
 Design: [GRPO_ES_ARCHITECTURE.md](GRPO_ES_ARCHITECTURE.md). Current state: the shared spine
-(config / tasks / rewards / token budget), the **GRPO leg**, two generated smoke tasks
-(`toy`, `countdown`), two benchmark tasks (`gsm8k`, `mmlu_pro`), two instruction-following
-tasks (`ifeval`, `ifbench`), the held-out **eval runner** (KL-to-base, paired significance
-tests), a small model alias ladder, and the **hub-env adapter**
-(`--task env:<owner>/<env>`). The ES leg lands on top.
+(config / tasks / rewards / token budget), the **GRPO leg**, a first cut of the **ES leg**
+(antithetic LoRA-subspace ES — population batching, warm-start and the trust region still
+to come), two generated smoke tasks (`toy`, `countdown`), two benchmark tasks (`gsm8k`,
+`mmlu_pro`), two instruction-following tasks (`ifeval`, `ifbench`), the held-out
+**eval runner** (KL-to-base, paired significance tests), a small model alias ladder, and
+the **hub-env adapter** (`--task env:<owner>/<env>`).
 
 Hardware target: a single RTX 5090 (CUDA, bf16).
 
@@ -49,6 +50,17 @@ optimizers) into `--output-dir`.
 
 Two seeds, deliberately separate: `--seed` drives the optimizer, `--data-seed` (pinned by
 default) drives the train-slice shuffle — so a seed sweep trains every run on the same rows.
+
+`--method es` runs the same task / reward / budget spine through evolution strategies
+instead of TRL (`configs/smoke_es.toml` is the seconds-scale wiring check): each step
+draws `--es-population` antithetic perturbation pairs in the LoRA parameter space, scores
+all 2N members on an `--es-eval-batch`-prompt mini-batch with the exact weighted reward
+GRPO trains on, and moves the adapter along the rank-weighted noise sum (`--es-sigma`,
+`--es-lr`, `--es-steps`). Fitness decoding matches the training temperature with one
+shared sampling seed per step, so decode noise partly cancels inside each antithetic
+pair (`--es-greedy-fitness` for the low-variance ablation). First cut: members generate
+sequentially — the batched population forward, warm-start and the trust region are the
+planned follow-ups (architecture §6).
 
 ## Models
 

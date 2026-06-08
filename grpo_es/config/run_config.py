@@ -16,7 +16,7 @@ from pathlib import Path
 
 from grpo_es.models import resolve_model_alias
 
-KNOWN_METHODS = ("grpo",)
+KNOWN_METHODS = ("grpo", "es")
 # ifeval/ifbench are hub-backed (need .venv-prime, see README).
 KNOWN_TASKS = ("toy", "countdown", "gsm8k", "mmlu_pro", "ifeval", "ifbench")
 
@@ -75,6 +75,17 @@ class RunConfig:
     lora_r: int = 16
     lora_alpha: int = 32
 
+    # ES leg (--method es). Shares seed/max_samples/temperature/
+    # max_completion_length/lora_* with the GRPO knobs above; `es_lr` stays
+    # separate from `learning_rate` because a rank-utility step size is not
+    # comparable to an Adam learning rate.
+    es_population: int = 32  # antithetic pairs -> 2N generations per step
+    es_sigma: float = 0.03  # perturbation scale in the fp32 LoRA subspace
+    es_lr: float = 0.05
+    es_steps: int = 200  # ES iterations (ES has no epoch notion)
+    es_eval_batch: int = 8  # prompts scored per member per step
+    es_greedy_fitness: bool = False  # greedy instead of temperature-matched sampling
+
     # Logging.
     verbose: bool = False
     logging_steps: int = 1
@@ -123,7 +134,7 @@ _RENAMED_FLAGS = {"trackio": "use_trackio"}
 def _build_parser() -> argparse.ArgumentParser:
     d = RunConfig()
     p = argparse.ArgumentParser(
-        description="Fine-tune a small LM on a verifiable task (GRPO leg)."
+        description="Fine-tune a small LM on a verifiable task (GRPO or ES)."
     )
     p.add_argument(
         "--config",
@@ -193,6 +204,23 @@ def _build_parser() -> argparse.ArgumentParser:
     flag("--no-peft", help="full fine-tune instead of LoRA")
     opt("--lora-r", default=d.lora_r, type=int)
     opt("--lora-alpha", default=d.lora_alpha, type=int)
+
+    opt(
+        "--es-population",
+        default=d.es_population,
+        type=int,
+        help="antithetic pairs per ES step (2N generations)",
+    )
+    opt("--es-sigma", default=d.es_sigma, type=float)
+    opt("--es-lr", default=d.es_lr, type=float)
+    opt("--es-steps", default=d.es_steps, type=int)
+    opt(
+        "--es-eval-batch",
+        default=d.es_eval_batch,
+        type=int,
+        help="prompts scored per member per ES step",
+    )
+    flag("--es-greedy-fitness", help="greedy fitness decoding (low-variance ablation)")
 
     flag("-v", "--verbose")
     opt("--logging-steps", default=d.logging_steps, type=int)

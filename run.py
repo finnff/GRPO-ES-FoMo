@@ -1,4 +1,4 @@
-"""Entrypoint: ``python run.py --method grpo --task toy --model ...``."""
+"""Entrypoint: ``python run.py --method {grpo,es} --task toy --model ...``."""
 
 from __future__ import annotations
 
@@ -15,6 +15,10 @@ def main(argv: list[str] | None = None) -> int:
         from grpo_es.methods.grpo import run_grpo
 
         run_grpo(cfg)
+    elif cfg.method == "es":
+        from grpo_es.methods.es import run_es
+
+        run_es(cfg)
     return 0
 
 

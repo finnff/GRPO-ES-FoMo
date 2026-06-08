@@ -126,8 +126,13 @@ def generate(
     seed: int = 0,
     batch_size: int = _GEN_BATCH,
     want_sequences: bool = False,
+    progress: bool = True,
 ) -> Generation:
-    """Generate one completion per prompt."""
+    """Generate one completion per prompt.
+
+    ``progress=False`` for callers in a tight loop (the ES leg generates per
+    population member) — a line per batch would drown the real logs.
+    """
     torch.manual_seed(seed)  # per-adapter reseed: same draw order for everyone
     completions: list[str] = []
     clipped: list[bool] = []
@@ -168,7 +173,10 @@ def generate(
         if want_sequences:
             sequences.append((gen.cpu(), input_len))
 
-        logger.info("generated %d/%d", min(start + batch_size, len(prompts)), len(prompts))
+        if progress:
+            logger.info(
+                "generated %d/%d", min(start + batch_size, len(prompts)), len(prompts)
+            )
 
     return Generation(completions, clipped, total_tokens, sequences if want_sequences else None)
 

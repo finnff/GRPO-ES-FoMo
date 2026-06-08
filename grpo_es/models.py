@@ -29,6 +29,31 @@ def resolve_model_alias(name: str) -> str:
     return MODEL_ALIASES.get(name.strip().lower(), name)
 
 
+_LORA_DROPOUT = 0.05
+
+
+def lora_config(model_id: str, r: int, alpha: int) -> "LoraConfig":
+    """The one LoRA recipe both method legs share.
+
+    GRPO trains and ES perturbs the identical adapter subspace; building the
+    config in exactly one place is what keeps that an invariant instead of a
+    convention. (Dropout only fires in train mode, so it shapes GRPO's
+    gradient steps and is inert during ES fitness evals.)
+    """
+    # Local import: this module loads at CLI-parse time (alias resolution),
+    # and peft would drag the heavyweight HF stack with it.
+    from peft import LoraConfig
+
+    return LoraConfig(
+        r=r,
+        lora_alpha=alpha,
+        lora_dropout=_LORA_DROPOUT,
+        bias="none",
+        task_type="CAUSAL_LM",
+        target_modules=lora_targets_for(model_id),
+    )
+
+
 def lora_targets_for(model_id: str) -> list[str]:
     """LoRA target module names for the model's architecture.
 

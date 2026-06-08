@@ -1,0 +1,15 @@
+# Smallest end-to-end ES run: two tiny population steps on a few toy rows.
+# Exists to catch wiring breakage in seconds, not to train anything.
+#
+#   python run.py --config configs/smoke_es.toml
+#
+# Keys are RunConfig field names; any CLI flag still overrides what's here.
+method = "es"
+task = "toy"
+max_samples = 4
+es_population = 2
+es_steps = 2
+es_eval_batch = 2
+max_completion_length = 64
+save_steps = 1000
+output_dir = "outputs/smoke-es"
