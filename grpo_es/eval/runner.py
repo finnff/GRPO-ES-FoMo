@@ -1,8 +1,8 @@
 """Generation + scoring for the held-out eval.
 
 Reproducibility invariants, in one place so they can't drift per call site:
-bf16 on cuda (never fp32/auto), left padding with the completion sliced off
-at the prompt length, a fresh ``torch.manual_seed`` per adapter, raw
+bf16 on cuda (fp32 on the CPU fallback only), left padding with the completion
+sliced off at the prompt length, a fresh ``torch.manual_seed`` per adapter, raw
 ``build_prompt`` strings (no chat template — the trainer sees none either).
 """
 
@@ -96,9 +96,16 @@ def _model_class(model_id: str) -> type:
 
 
 def load_model(model_id: str, adapter: str = "base") -> PreTrainedModel:
-    """Base model in bf16 on cuda, optionally with a LoRA adapter on top."""
+    """Base model on cuda (bf16) when available, else cpu (fp32), optionally
+    with a LoRA adapter on top. CPU is a correctness fallback, not a fast path:
+    bf16 generation is poorly supported on CPU, so the fallback uses fp32."""
+    if torch.cuda.is_available():
+        dtype, device = torch.bfloat16, "cuda"
+    else:
+        logger.warning("CUDA not available; loading %s on CPU in fp32 (slow).", model_id)
+        dtype, device = torch.float32, "cpu"
     model = _model_class(model_id).from_pretrained(
-        model_id, dtype=torch.bfloat16, device_map="cuda"
+        model_id, dtype=dtype, device_map=device
     )
     if adapter and adapter != "base":
         model = PeftModel.from_pretrained(model, adapter)

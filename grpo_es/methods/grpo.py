@@ -45,6 +45,11 @@ def _check_generation_batching(cfg: RunConfig) -> None:
 
 
 def _training_args(cfg: RunConfig) -> GRPOConfig:
+    # bf16 needs a GPU; without CUDA, fall back to fp32 on CPU. use_cpu is what
+    # transformers' own validator points you at for the non-cuda case.
+    on_cuda = torch.cuda.is_available()
+    if not on_cuda:
+        logger.warning("CUDA not available; training on CPU in fp32 (slow).")
     return GRPOConfig(
         output_dir=cfg.output_dir,
         save_steps=cfg.save_steps,
@@ -67,7 +72,8 @@ def _training_args(cfg: RunConfig) -> GRPOConfig:
         log_level_replica="error",
         # Keep dataset columns: reward funcs read answer/numbers/target/... .
         remove_unused_columns=False,
-        bf16=True,
+        bf16=on_cuda,
+        use_cpu=not on_cuda,
     )
 
 
