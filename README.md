@@ -12,7 +12,8 @@ region), two generated smoke tasks (`toy`, `countdown`), two benchmark tasks (`g
 **eval runner** (KL-to-base, paired significance tests), a small model alias ladder, and
 the **hub-env adapter** (`--task env:<owner>/<env>`).
 
-Hardware target: a single RTX 5090 (CUDA, bf16).
+Hardware target: a single RTX 5090 (CUDA, bf16). Also runs on AMD GPUs via
+ROCm and on CPU (fp32, slow) — see [Other accelerators](#other-accelerators).
 
 ## Install
 
@@ -30,6 +31,34 @@ two-step install lands on the known-good pairing (`datasets` 4.6.x). Details in
 `requirements.txt` — the single source of truth for dependency pins.
 
 Optional: `pip install -r requirements-trackio.txt` for the `--trackio` metrics dashboard.
+
+### Other accelerators
+
+The GPU code path is vendor-agnostic. PyTorch-ROCm exposes **AMD** GPUs through the
+same `torch.cuda` API as NVIDIA, so the spine needs no special casing — install a ROCm
+build of torch and everything (`device_map="cuda"`, bf16) routes to the Radeon. Detection
+and startup logging live in `grpo_es/accel.py` (it prints `AMD ROCm '<gpu>' via HIP …` so
+an AMD box doesn't masquerade as plain "cuda").
+
+```bash
+# Install a ROCm torch wheel (pick the index for your ROCm version):
+pip install torch --index-url https://download.pytorch.org/whl/rocm6.4
+
+# RDNA 3.5 iGPUs (Radeon 860M/890M on Ryzen AI 300/AI 350, gfx115x) aren't on
+# ROCm's official allowlist yet — present them as the nearest supported ISA:
+export HSA_OVERRIDE_GFX_VERSION=11.0.0
+
+# Confirm a real kernel runs on the GPU before training:
+./scripts/check_amd_rocm.sh
+```
+
+For a shared-memory iGPU, raise the GTT/UMA budget (kernel `amdgpu.gttsize=…` or a larger
+UMA buffer in BIOS) so models fit. **Vulkan is not a supported backend**: PyTorch's Vulkan
+path is an inference-only, mobile-targeted op subset with no autograd — it can't run HF
+`generate()` or TRL training. ROCm is the route for AMD acceleration here.
+
+CPU works with no extra steps (the same detection falls back to fp32); it's a correctness
+path for tiny smoke configs, not real training.
 
 ## Run
 

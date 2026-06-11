@@ -28,6 +28,7 @@ from transformers import (
 )
 from verifiers.rubrics.rubric import Rubric
 
+from grpo_es import accel
 from grpo_es.eval.kl import sequence_kl_to_base
 from grpo_es.eval.metrics import EvalMetrics, coherence_gate, score_completions
 
@@ -96,14 +97,12 @@ def _model_class(model_id: str) -> type:
 
 
 def load_model(model_id: str, adapter: str = "base") -> PreTrainedModel:
-    """Base model on cuda (bf16) when available, else cpu (fp32), optionally
-    with a LoRA adapter on top. CPU is a correctness fallback, not a fast path:
-    bf16 generation is poorly supported on CPU, so the fallback uses fp32."""
-    if torch.cuda.is_available():
-        dtype, device = torch.bfloat16, "cuda"
-    else:
-        logger.warning("CUDA not available; loading %s on CPU in fp32 (slow).", model_id)
-        dtype, device = torch.float32, "cpu"
+    """Base model on a GPU (bf16) when available, else cpu (fp32), optionally
+    with a LoRA adapter on top. "GPU" is NVIDIA CUDA or AMD ROCm alike — both
+    ride the same ``torch.cuda`` path. CPU is a correctness fallback, not a
+    fast path: bf16 generation is poorly supported on CPU, so it uses fp32."""
+    device, dtype = accel.device_and_dtype()
+    accel.log_active(f"load_model({model_id})")
     model = _model_class(model_id).from_pretrained(
         model_id, dtype=dtype, device_map=device
     )
