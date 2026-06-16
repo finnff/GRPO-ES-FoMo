@@ -479,11 +479,17 @@ def run_es(cfg: RunConfig) -> Path:
             )
 
         step_times.append(time.perf_counter() - t_step)
+        # Fraction of the whole population's rollouts that came back empty
+        # (immediate EOS). A spike here while fitness holds/climbs is the tell
+        # for a length-collapse / format-dropping reward hack — the kind the
+        # mean alone hides (it stays high while mean_len cratered).
+        empty_frac = sum(1 for l in lengths if l == 0) / len(lengths)
         record = {
             "step": step + 1,
             "fitness_mean": sum(fits) / len(fits),
             "fitness_best": max(fits),
             "mean_len": sum(lengths) / len(lengths),
+            "empty_frac": empty_frac,
             "tokens": total_tokens,
             "theta_dev": engine.theta_dev(),
             "step_time": step_times[-1],
@@ -491,13 +497,14 @@ def run_es(cfg: RunConfig) -> Path:
         with history_path.open("a") as fh:
             fh.write(json.dumps(record) + "\n")
         logger.info(
-            "step %d/%d fitness mean=%.4f best=%.4f mean_len=%.0f tokens=%d "
-            "theta_dev=%.2f step_time=%.1f",
+            "step %d/%d fitness mean=%.4f best=%.4f mean_len=%.0f empty=%.2f "
+            "tokens=%d theta_dev=%.2f step_time=%.1f",
             step + 1,
             cfg.es_steps,
             record["fitness_mean"],
             record["fitness_best"],
             record["mean_len"],
+            record["empty_frac"],
             total_tokens,
             record["theta_dev"],
             record["step_time"],

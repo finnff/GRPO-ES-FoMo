@@ -95,9 +95,9 @@ class RunConfig:
     save_steps: int = 50
     use_trackio: bool = False
     trackio_space_id: str | None = None
-    inspect_dump: bool = False  # write per-completion rollouts for inspect_run.py
+    inspect_dump: bool = True  # write per-completion rollouts for inspect_run.py (--no-inspect-dump to skip)
     inspect_every: int = 1  # dump every Nth optimizer/ES step
-    inspect_max_prompts: int = 1  # prompts sampled per dumped step
+    inspect_max_prompts: int = 3  # prompts sampled per dumped step (>1 so one bad prompt isn't mistaken for the whole batch)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -133,6 +133,7 @@ _INVERTED_FLAGS = {
     "no_gradient_checkpointing": "gradient_checkpointing",
     "no_format_reward": "use_format_reward",
     "no_peft": "use_peft",
+    "no_inspect_dump": "inspect_dump",
 }
 _RENAMED_FLAGS = {"trackio": "use_trackio"}
 
@@ -254,9 +255,9 @@ def _build_parser() -> argparse.ArgumentParser:
     flag("--trackio", help="log metrics to trackio")
     opt("--trackio-space-id", default=d.trackio_space_id)
     flag(
-        "--inspect-dump",
-        help="dump per-completion rollouts to <output_dir>/inspect.jsonl "
-        "for the inspect_run.py live viewer",
+        "--no-inspect-dump",
+        help="skip the per-completion rollout dump to <output_dir>/inspect.jsonl "
+        "(on by default; feeds the inspect_run.py live viewer)",
     )
     opt("--inspect-every", default=d.inspect_every, type=int)
     opt("--inspect-max-prompts", default=d.inspect_max_prompts, type=int)

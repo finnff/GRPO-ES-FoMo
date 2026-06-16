@@ -1,11 +1,11 @@
-"""Opt-in per-completion rollout dump for the live inspector.
+"""Per-completion rollout dump for the live inspector.
 
-Both training legs can, when ``--inspect-dump`` is set, append one JSON line per
-rollout to ``<output_dir>/inspect.jsonl``: the prompt, the completion text, the
-rubric reward, the format score, the token count and a clipped flag. The
-standalone ``inspect_run.py`` viewer tails that file and renders it green/yellow/
-red. Nothing here runs unless the flag is on, so the default training path is
-untouched.
+Both training legs append one JSON line per rollout to
+``<output_dir>/inspect.jsonl``: the prompt, the completion text, the rubric
+reward, the format score, the token count and a clipped flag. The standalone
+``inspect_run.py`` viewer tails that file and renders it green/yellow/red. This
+is on by default; pass ``--no-inspect-dump`` to skip it and leave the training
+path untouched.
 
 Scoring goes through the same :func:`grpo_es.eval.metrics.score_completions`
 path the trainer's reward funcs use, so a number shown by the inspector matches

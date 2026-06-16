@@ -2,7 +2,7 @@
 """Live inspector for a GRPO/ES run's rollouts.
 
 Standalone: stdlib only, no project imports, no torch. It tails the
-``inspect.jsonl`` a run writes when started with ``--inspect-dump`` and prints an
+``inspect.jsonl`` a run writes by default (unless ``--no-inspect-dump``) and prints an
 append-only, colored log of what the policy is actually producing — one block
 per training step, each completion graded:
 
@@ -14,9 +14,15 @@ Each line also shows token usage ``tok=used/max`` and flags ``CLIP`` when the
 completion ran to the cap without stopping, so truncated answers stand out.
 
 Usage:
-    python inspect_run.py outputs/grpo-toy            # tail the run dir's inspect.jsonl
+    python inspect_run.py                             # auto-follow the newest run under outputs/
+    python inspect_run.py outputs/grpo-toy            # tail a specific run dir's inspect.jsonl
     python inspect_run.py --file path/to/inspect.jsonl
+    python inspect_run.py --search-root runs          # auto-follow newest under a custom root
     python inspect_run.py outputs/es-toy --no-follow -n 2   # replay last 2 steps, exit
+
+With no run dir given it picks the most recently written ``inspect.jsonl`` it can
+find, waits if a run hasn't started yet, and hot-switches to a newer run's dump
+when one appears — so you can leave it open and just start training.
 """
 
 from __future__ import annotations
@@ -57,6 +63,23 @@ def _resolve_paths(args) -> tuple[Path, Path]:
             jsonl = target / "inspect.jsonl"
             cfg_dir = target
     return jsonl, cfg_dir / "run_config.json"
+
+
+def _default_search_root() -> Path:
+    """Where to hunt for run dumps when none was named: prefer ``outputs/``."""
+    out = Path("outputs")
+    return out if out.is_dir() else Path(".")
+
+
+def _find_latest_jsonl(root: Path) -> Path | None:
+    """Newest ``inspect.jsonl`` anywhere under ``root`` by mtime, or None."""
+    try:
+        candidates = [p for p in root.rglob("inspect.jsonl") if p.is_file()]
+    except OSError:
+        return None
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
 def _load_cfg(cfg_path: Path) -> dict:
@@ -190,6 +213,7 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("run", nargs="?", default=".", help="run output dir (reads inspect.jsonl)")
     p.add_argument("--file", help="path to an inspect.jsonl directly")
+    p.add_argument("--search-root", help="auto-follow the newest inspect.jsonl under this dir (default: auto when no run dir given)")
     p.add_argument("-f", "--follow", dest="follow", action="store_true", default=True, help="tail the file (default)")
     p.add_argument("--no-follow", dest="follow", action="store_false", help="render and exit")
     p.add_argument("-n", "--last", type=int, default=0, metavar="N", help="render only the last N steps already on disk first")
@@ -202,57 +226,95 @@ def main(argv=None) -> int:
     if args.color is None:
         args.color = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
 
-    jsonl, cfg_path = _resolve_paths(args)
+    # Auto-discovery mode: with no run dir / --file given (the bare
+    # ``inspect_run.py`` case), or with an explicit --search-root, follow the
+    # newest inspect.jsonl we can find rather than a fixed path. An explicit run
+    # dir or --file is always honored as-is, so a viewer can still be aimed at a
+    # run before it has written anything.
+    auto = args.search_root is not None or (args.file is None and args.run == ".")
+    root = Path(args.search_root) if args.search_root else _default_search_root()
 
-    # Wait for the file to appear (training may not have dumped yet).
-    if not jsonl.exists():
-        if not args.follow:
-            print(f"no such file: {jsonl}", file=sys.stderr)
-            return 1
-        print(f"waiting for {jsonl} …", file=sys.stderr)
-        while not jsonl.exists():
-            time.sleep(0.5)
-
-    # Load run_config.json now — for a viewer started before training, it only
-    # exists once the run dir has been written.
-    renderer = Renderer(args, _load_cfg(cfg_path))
-
-    # Replay history (optionally only the last N steps), then start tailing
-    # from the current end of file.
-    existing = _read_records(jsonl)
-    if args.last > 0:
-        existing = _last_n_steps(existing, args.last)
-    for rec in existing:
-        renderer.feed(rec)
-
-    if not args.follow:
-        renderer.finish()
-        return 0
-
-    pos = jsonl.stat().st_size
-    buf = ""
-    try:
-        while True:
-            with jsonl.open() as fh:
-                fh.seek(pos)
-                chunk = fh.read()
-                pos = fh.tell()
-            if chunk:
-                buf += chunk
-                *lines, buf = buf.split("\n")
-                for line in lines:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        renderer.feed(json.loads(line))
-                    except json.JSONDecodeError:
-                        continue
-                sys.stdout.flush()
-            else:
+    if auto:
+        jsonl = _find_latest_jsonl(root)
+        if jsonl is None:
+            if not args.follow:
+                print(f"no inspect.jsonl found under {root}/", file=sys.stderr)
+                return 1
+            print(f"waiting for a run to write inspect.jsonl under {root}/ …", file=sys.stderr)
+            while jsonl is None:
                 time.sleep(0.5)
+                jsonl = _find_latest_jsonl(root)
+        cfg_path = jsonl.parent / "run_config.json"
+        print(f"inspecting {jsonl}", file=sys.stderr)
+    else:
+        jsonl, cfg_path = _resolve_paths(args)
+        # Wait for the file to appear (training may not have dumped yet).
+        if not jsonl.exists():
+            if not args.follow:
+                print(f"no such file: {jsonl}", file=sys.stderr)
+                return 1
+            print(f"waiting for {jsonl} …", file=sys.stderr)
+            while not jsonl.exists():
+                time.sleep(0.5)
+
+    renderer = None
+    try:
+        while True:  # one pass per run; loops again only on a hot-switch (auto)
+            # Load run_config.json now — for a viewer started before training,
+            # it only exists once the run dir has been written.
+            renderer = Renderer(args, _load_cfg(cfg_path))
+
+            # Replay history (optionally only the last N steps), then tail from
+            # the current end of file.
+            existing = _read_records(jsonl)
+            if args.last > 0:
+                existing = _last_n_steps(existing, args.last)
+            for rec in existing:
+                renderer.feed(rec)
+
+            if not args.follow:
+                renderer.finish()
+                return 0
+
+            pos = jsonl.stat().st_size
+            buf = ""
+            switch_to = None
+            while switch_to is None:
+                with jsonl.open() as fh:
+                    fh.seek(pos)
+                    chunk = fh.read()
+                    pos = fh.tell()
+                if chunk:
+                    buf += chunk
+                    *lines, buf = buf.split("\n")
+                    for line in lines:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            renderer.feed(json.loads(line))
+                        except json.JSONDecodeError:
+                            continue
+                    sys.stdout.flush()
+                else:
+                    time.sleep(0.5)
+                    # While idle, see if a newer run has started writing.
+                    if auto:
+                        latest = _find_latest_jsonl(root)
+                        if (latest is not None and latest != jsonl
+                                and latest.stat().st_mtime > jsonl.stat().st_mtime):
+                            switch_to = latest
+
+            # A newer run started — close out the current block and follow it
+            # from the top.
+            renderer.finish()
+            print(f"\n── switched to {switch_to} ", file=sys.stderr)
+            jsonl = switch_to
+            cfg_path = jsonl.parent / "run_config.json"
+            args.last = 0  # show the new run from its start
     except KeyboardInterrupt:
-        renderer.finish()
+        if renderer is not None:
+            renderer.finish()
         return 0
 
 
