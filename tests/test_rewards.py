@@ -36,6 +36,19 @@ def test_toy_rubric_exact_match():
     assert func(prompts, completions, answer=["tg", "tg"]) == [1.0, 0.0]
 
 
+def test_toy_rubric_rejects_bare_answer():
+    # The bare-answer reward hack: a tag-less "tg" must NOT score — only an
+    # answer delivered inside the <answer> scaffold earns task reward.
+    func = rubric_reward_func(get_rubric("toy"))
+    prompts = ["Concatenate the last letters of: cat, dog"] * 3
+    completions = [
+        "<think>...</think><answer>tg</answer>",  # tagged, correct  -> 1.0
+        "tg",  # bare correct answer, no tags  -> 0.0 (used to be 1.0)
+        "<answer>xx</answer>",  # tagged, wrong  -> 0.0
+    ]
+    assert func(prompts, completions, answer=["tg", "tg", "tg"]) == [1.0, 0.0, 0.0]
+
+
 @pytest.mark.parametrize(
     ("expr", "expected"),
     [

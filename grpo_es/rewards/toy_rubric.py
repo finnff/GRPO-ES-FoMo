@@ -12,8 +12,11 @@ _ANSWER_TAG = re.compile(r"<answer>\s*(.*?)\s*</answer>", re.DOTALL | re.IGNOREC
 
 
 def _extract_answer(text: str) -> str:
+    # No <answer> tag -> no answer. Falling back to the raw completion let the
+    # model drop the scaffold and emit a bare 3-letter string for full task
+    # reward (format 0) — a reward hack. An empty string scores 0 instead.
     match = _ANSWER_TAG.search(text)
-    return (match.group(1) if match else text).strip()
+    return match.group(1).strip() if match else ""
 
 
 class ToyRubric(Rubric):
