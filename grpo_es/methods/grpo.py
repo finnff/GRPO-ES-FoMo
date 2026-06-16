@@ -18,10 +18,11 @@ from trl import GRPOConfig, GRPOTrainer
 
 from grpo_es import accel
 from grpo_es.config.run_config import RunConfig
-from grpo_es.methods.callbacks import CompactMetricsCallback
+from grpo_es.inspect_dump import InspectDumper, make_inspect_reward_func
+from grpo_es.methods.callbacks import CompactMetricsCallback, InspectStepCallback
 from grpo_es.metrics.budget import extract_trl_token_budget
 from grpo_es.models import lora_config
-from grpo_es.rewards.registry import make_trl_reward_funcs
+from grpo_es.rewards.registry import get_rubric, make_trl_reward_funcs
 from grpo_es.tasks.base import build_dataset
 from grpo_es.tasks.registry import get_task_spec
 
@@ -121,6 +122,30 @@ def run_grpo(cfg: RunConfig) -> Path:
     out.mkdir(parents=True, exist_ok=True)
     cfg.save(out / "run_config.json")
 
+    callbacks = [] if cfg.verbose else [CompactMetricsCallback()]
+    if cfg.inspect_dump:
+        # A zero-weight observer reward func dumps rollouts; a step callback
+        # feeds it the live global_step. Weights must be materialized so the
+        # observer's 0 is explicit — leaving them None makes TRL weight every
+        # func equally and the observer would then shape the policy.
+        step_box: dict = {"step": 0}
+        observer = make_inspect_reward_func(
+            InspectDumper(out / "inspect.jsonl", "grpo"),
+            get_rubric(spec.rubric),
+            tokenizer,
+            cfg.max_completion_length,
+            cfg.num_generations,
+            cfg.inspect_max_prompts,
+            step_box,
+            cfg.inspect_every,
+        )
+        if reward_weights is None:
+            reward_weights = [1.0] * len(reward_funcs)
+        reward_funcs = [*reward_funcs, observer]
+        reward_weights = [*reward_weights, 0.0]
+        training_args.reward_weights = reward_weights
+        callbacks.append(InspectStepCallback(step_box))
+
     trainer = QuietGRPOTrainer(
         model=cfg.model,
         args=training_args,
@@ -128,7 +153,7 @@ def run_grpo(cfg: RunConfig) -> Path:
         train_dataset=train_ds,
         peft_config=_peft_config(cfg),
         processing_class=tokenizer,
-        callbacks=None if cfg.verbose else [CompactMetricsCallback()],
+        callbacks=callbacks or None,
         quiet=not cfg.verbose,
     )
 

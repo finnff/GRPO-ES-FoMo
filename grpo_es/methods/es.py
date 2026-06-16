@@ -35,9 +35,10 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from grpo_es.config.run_config import RunConfig
 from grpo_es.eval.runner import DecodeParams, generate, load_model, load_tokenizer
+from grpo_es.inspect_dump import InspectDumper, build_records
 from grpo_es.metrics.budget import TokenBudgetLog
 from grpo_es.models import lora_config
-from grpo_es.rewards.registry import make_trl_reward_funcs
+from grpo_es.rewards.registry import get_rubric, make_trl_reward_funcs
 from grpo_es.tasks.base import TaskSpec, build_dataset
 from grpo_es.tasks.registry import get_task_spec
 
@@ -253,6 +254,8 @@ def _score_population(
     model: PreTrainedModel,
     gen_seed: int,
     member_batch: int,
+    collect: list | None = None,
+    collect_prompts: int = 0,
 ) -> tuple[list[float], list[int], int]:
     """Score all 2N antithetic members on one mini-batch.
 
@@ -287,6 +290,12 @@ def _score_population(
             for j in range(len(chunk)):
                 member = gen.completions[j * k : (j + 1) * k]
                 by_sign[sign].append(fitness(prompts, member, columns))
+                if collect is not None:
+                    member_idx = start + j
+                    for p in range(min(collect_prompts, k)):
+                        collect.append(
+                            (sign, member_idx, p, member[p], gen.clipped[j * k + p])
+                        )
     fits = [f for pair in zip(by_sign[1.0], by_sign[-1.0]) for f in pair]
     return fits, lengths, tokens
 
@@ -399,6 +408,9 @@ def run_es(cfg: RunConfig) -> Path:
     history_path = out / "history.jsonl"
     history_path.unlink(missing_ok=True)
 
+    dumper = InspectDumper(out / "inspect.jsonl", "es") if cfg.inspect_dump else None
+    rubric = get_rubric(spec.rubric) if cfg.inspect_dump else None
+
     _log_calibration(engine, cfg, len(train_ds))
 
     # The mini-batch picker rides the optimizer seed (like GRPO's data order),
@@ -421,6 +433,12 @@ def run_es(cfg: RunConfig) -> Path:
         # One sampling seed per step (distinct prime stride keeps it off the
         # noise stream), shared by every chunk inside _score_population.
         gen_seed = cfg.seed * _GEN_SEED_STRIDE + step
+        dump_this_step = (
+            dumper is not None
+            and cfg.inspect_every > 0
+            and (step + 1) % cfg.inspect_every == 0
+        )
+        collect: list | None = [] if dump_this_step else None
         fits, lengths, tokens = _score_population(
             engine,
             noise,
@@ -432,9 +450,33 @@ def run_es(cfg: RunConfig) -> Path:
             model,
             gen_seed,
             cfg.es_member_batch,
+            collect=collect,
+            collect_prompts=cfg.inspect_max_prompts if dump_this_step else 0,
         )
         total_tokens += tokens
         engine.update(noise, fits)
+
+        if collect:
+            items = [
+                {
+                    "prompt": prompts[p],
+                    "completion": completion,
+                    "answer": columns.get("answer", [""] * len(prompts))[p]
+                    if "answer" in columns
+                    else "",
+                    "columns": {c: columns[c][p] for c in columns},
+                    "clipped": clipped,
+                    "group": p,
+                    "member": member_idx,
+                    "sign": "+" if sign > 0 else "-",
+                }
+                for sign, member_idx, p, completion, clipped in collect
+            ]
+            dumper.write(
+                build_records(
+                    rubric, tok, cfg.max_completion_length, step + 1, "es", items
+                )
+            )
 
         step_times.append(time.perf_counter() - t_step)
         record = {

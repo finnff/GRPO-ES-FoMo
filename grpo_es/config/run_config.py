@@ -95,6 +95,9 @@ class RunConfig:
     save_steps: int = 50
     use_trackio: bool = False
     trackio_space_id: str | None = None
+    inspect_dump: bool = False  # write per-completion rollouts for inspect_run.py
+    inspect_every: int = 1  # dump every Nth optimizer/ES step
+    inspect_max_prompts: int = 1  # prompts sampled per dumped step
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -250,6 +253,13 @@ def _build_parser() -> argparse.ArgumentParser:
     opt("--save-steps", default=d.save_steps, type=int)
     flag("--trackio", help="log metrics to trackio")
     opt("--trackio-space-id", default=d.trackio_space_id)
+    flag(
+        "--inspect-dump",
+        help="dump per-completion rollouts to <output_dir>/inspect.jsonl "
+        "for the inspect_run.py live viewer",
+    )
+    opt("--inspect-every", default=d.inspect_every, type=int)
+    opt("--inspect-max-prompts", default=d.inspect_max_prompts, type=int)
     return p
 
 
