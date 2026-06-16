@@ -4,14 +4,16 @@
 Standalone: stdlib only, no project imports, no torch. It tails the
 ``inspect.jsonl`` a run writes by default (unless ``--no-inspect-dump``) and prints an
 append-only, colored log of what the policy is actually producing — one block
-per training step, each completion graded:
+per training step. Within a step, each prompt is printed once in full, with all
+member responses to that prompt grouped beneath it. Each completion is graded:
 
     green  = correct answer        (task_reward >= --correct, default 1.0)
     yellow = format-only / partial (decent scaffold or partial reward, wrong)
     red    = wrong
 
-Each line also shows token usage ``tok=used/max`` and flags ``CLIP`` when the
-completion ran to the cap without stopping, so truncated answers stand out.
+Each line also shows token usage ``tok=used/max`` and flags ``CLIP`` (red) when
+the completion ran to the cap without stopping, and shows ``NULL`` (red) in
+place of an empty / zero-token response, so degenerate rollouts stand out.
 
 Usage:
     python inspect_run.py                             # auto-follow the newest run under outputs/
@@ -104,8 +106,8 @@ class Renderer:
         self.task = cfg.get("task", "?")
         self.color = args.color
         self.cur_step = None
-        self.cur_group = None
-        self.tally = {"green": 0, "yellow": 0, "red": 0, "clip": 0}
+        self.buf: list[dict] = []  # records of the step currently being buffered
+        self.rendered = False  # has self.buf already been printed?
 
     def _c(self, name: str, text: str) -> str:
         if not self.color:
@@ -128,47 +130,17 @@ class Renderer:
             return flat[:width] + "…"
         return flat
 
-    def _flush_footer(self) -> None:
-        if self.cur_step is None:
-            return
-        t = self.tally
-        line = (
-            f"   {self._c('green', '● %d correct' % t['green'])}  "
-            f"{self._c('yellow', '● %d format' % t['yellow'])}  "
-            f"{self._c('red', '● %d wrong' % t['red'])}  "
-            f"{self._c('dim', '%d clipped' % t['clip'])}"
-        )
-        print(line)
-        print()
-
-    def feed(self, rec: dict) -> None:
-        step = rec.get("step")
-        method = rec.get("method", "?")
-        if step != self.cur_step:
-            self._flush_footer()
-            self.tally = {"green": 0, "yellow": 0, "red": 0, "clip": 0}
-            self.cur_step = step
-            self.cur_group = None
-            header = f"── step {step} · {method} {self.task} "
-            print(self._c("bold", header + "─" * max(0, 60 - len(header))))
-
-        group = rec.get("group", 0)
-        if group != self.cur_group:
-            self.cur_group = group
-            prompt = self._clip(
-                rec.get("prompt", ""), 0 if self.args.full else 160
-            )
-            print(self._c("cyan", f" prompt[{group}]: ") + self._c("dim", prompt))
-
+    def _render_line(self, rec: dict, tally: dict) -> None:
         grade = self._grade(rec)
-        self.tally[grade] += 1
+        tally[grade] += 1
         clipped = rec.get("clipped", False)
         if clipped:
-            self.tally["clip"] += 1
+            tally["clip"] += 1
 
         sign = rec.get("sign") or ""
         member = f"m{rec.get('member', 0)}{sign}"
-        tok = f"{rec.get('tokens', 0)}/{rec.get('max_tokens', 0)}"
+        tokens = rec.get("tokens", 0)
+        tok = f"{tokens}/{rec.get('max_tokens', 0)}"
         clip_flag = self._c("red", " CLIP") if clipped else ""
         meta = (
             f"ans={rec.get('task_reward', 0.0):.2f} "
@@ -177,12 +149,70 @@ class Renderer:
         snippet = self._clip(
             rec.get("completion", ""), 0 if self.args.full else self.args.width
         )
+        if not snippet:
+            tally["null"] += 1
+            snippet = self._c("red", "NULL")
         dot = self._c(grade, "●")
         print(f"  {dot} {member:<6} {meta}  {self._c('dim', '|')} {snippet}")
 
+    def _flush_step(self) -> None:
+        """Render the buffered step: header, each prompt once (full), then all
+        member responses to that prompt, then the tally footer.
+
+        Idempotent: a step is flushed either when the tail goes idle (the burst
+        for a step is written atomically, so idle == step complete) or when the
+        next step's records arrive, whichever lands first; the ``rendered`` guard
+        keeps the second trigger from reprinting it."""
+        if self.cur_step is None or not self.buf or self.rendered:
+            return
+        self.rendered = True
+
+        method = self.buf[0].get("method", "?")
+        header = f"── step {self.cur_step} · {method} {self.task} "
+        print(self._c("bold", header + "─" * max(0, 60 - len(header))))
+
+        # Group records by prompt (group index), preserving first-seen order,
+        # so every member's response to a prompt sits under that one prompt.
+        groups: dict = {}
+        order: list = []
+        for rec in self.buf:
+            g = rec.get("group", 0)
+            if g not in groups:
+                groups[g] = []
+                order.append(g)
+            groups[g].append(rec)
+
+        tally = {"green": 0, "yellow": 0, "red": 0, "clip": 0, "null": 0}
+        for g in order:
+            recs = groups[g]
+            prompt = " ".join(recs[0].get("prompt", "").split())  # full, uncropped
+            print(self._c("cyan", f" prompt[{g}]: ") + self._c("dim", prompt))
+            for rec in recs:
+                self._render_line(rec, tally)
+
+        footer = (
+            f"   {self._c('green', '● %d correct' % tally['green'])}  "
+            f"{self._c('yellow', '● %d format' % tally['yellow'])}  "
+            f"{self._c('red', '● %d wrong' % tally['red'])}  "
+            f"{self._c('dim', '%d clipped' % tally['clip'])}  "
+            f"{self._c('red', '%d null' % tally['null'])}"
+        )
+        print(footer)
+        print()
+
+    def feed(self, rec: dict) -> None:
+        step = rec.get("step")
+        if step != self.cur_step:
+            self._flush_step()
+            self.cur_step = step
+            self.buf = []
+        self.buf.append(rec)
+        self.rendered = False
+
     def finish(self) -> None:
-        self._flush_footer()
+        self._flush_step()
         self.cur_step = None  # don't double-flush
+        self.buf = []
 
 
 def _read_records(path: Path) -> list[dict]:
@@ -297,6 +327,11 @@ def main(argv=None) -> int:
                             continue
                     sys.stdout.flush()
                 else:
+                    # No new bytes: a step is written in one atomic burst, so an
+                    # idle read means the buffered step is complete — render it
+                    # now instead of waiting for the next step to start.
+                    renderer._flush_step()
+                    sys.stdout.flush()
                     time.sleep(0.5)
                     # While idle, see if a newer run has started writing.
                     if auto:
