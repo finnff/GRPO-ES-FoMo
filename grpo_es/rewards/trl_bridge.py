@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Mapping, Sequence
 from typing import Any, Callable
 
 from verifiers.rubrics.rubric import Rubric
@@ -72,18 +73,21 @@ class VerifiersRubricAdapter:
 def is_per_sample_column(value: Any, n: int) -> bool:
     """Is ``value`` a per-sample column aligned with ``n`` prompts?
 
-    A column is any non-string, non-mapping sequence of length ``n``. TRL hands
-    columns as ``list``s, but ``datasets>=4`` hands the ES leg a lazy
-    ``Column`` instead — both must be forwarded, while scalars and wrong-length
-    values are still dropped. An ``isinstance(v, list)`` check silently dropped
-    ``Column``s, starving the rubric of ``answer``/``info``/operands.
+    A column is any non-string, non-mapping ``Sequence`` of length ``n`` —
+    i.e. an integer-indexable, aligned column the row builder can slice with
+    ``v[i]``. TRL hands columns as ``list``s, but ``datasets>=4`` hands the ES
+    leg a lazy ``Column`` instead; both are ``Sequence``s and must be forwarded,
+    while scalars and wrong-length values are dropped. An ``isinstance(v, list)``
+    check silently dropped ``Column``s, starving the rubric of
+    ``answer``/``info``/operands; the looser ``len(v) == n`` check would instead
+    wrongly admit non-indexable collections (``set``, ``dict_keys``, ...) and
+    then blow up at ``v[i]``.
     """
-    if isinstance(value, (str, bytes, dict)):
+    if isinstance(value, (str, bytes, Mapping)):
         return False
-    try:
-        return len(value) == n
-    except TypeError:
+    if not isinstance(value, Sequence):
         return False
+    return len(value) == n
 
 
 def rubric_reward_func(rubric: Rubric, name: str | None = None) -> Callable:

@@ -407,12 +407,16 @@ def run_es(cfg: RunConfig) -> Path:
     tok = load_tokenizer(cfg.model)
     model, warm_tokens = _load_es_model(cfg)
 
+    # Construct with safe placeholders for any -1 auto sentinels — a negative σ
+    # or trust region is a fragile state to leave the engine in (e.g. a negative
+    # trust region projects with a negative shrink). The real values are pushed
+    # back below before any step runs.
     engine = ESEngine(
         model,
-        sigma=cfg.es_sigma,
+        sigma=cfg.es_sigma if cfg.es_sigma >= 0 else 0.0,
         lr=cfg.es_lr,
         seed=cfg.seed,
-        trust_region=cfg.es_trust_region,
+        trust_region=cfg.es_trust_region if cfg.es_trust_region >= 0 else 0.0,
     )
     # Resolve auto σ/R now that the adapter geometry is known, then push the
     # resolved values back onto the engine so the first step uses them (and

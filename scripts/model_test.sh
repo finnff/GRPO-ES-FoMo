@@ -43,7 +43,7 @@ for cell in sorted(glob.glob(os.path.join(out_dir, "*", ""))):
     name = os.path.basename(cell.rstrip("/"))
     cfg_p = os.path.join(cell, "run_config.json")
     if not os.path.exists(cfg_p):
-        rows.append((name, "FAIL", "", "", "")); continue
+        rows.append((name, "FAIL", "", "", "", "")); continue
     method = json.load(open(cfg_p)).get("method", "?")
     first = last = mx = extra = ""
     if method == "grpo":
