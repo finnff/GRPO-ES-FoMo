@@ -1,0 +1,12 @@
+# GRPO on IFBench — held-out structural instruction-following.
+# Hub-backed task: needs .venv-prime (see README).
+#
+#   python run.py --config configs/grpo_ifbench.toml --seed 0
+#
+# Keys are RunConfig field names; any CLI flag still overrides what's here.
+method = "grpo"
+task = "ifbench"
+model = "qwen3.5-0.8b"
+max_samples = 100
+max_completion_length = 512
+output_dir = "outputs/grpo-ifbench"

@@ -69,11 +69,28 @@ class VerifiersRubricAdapter:
         return self.score_batch([(prompt, completion, columns)])[0]
 
 
+def is_per_sample_column(value: Any, n: int) -> bool:
+    """Is ``value`` a per-sample column aligned with ``n`` prompts?
+
+    A column is any non-string, non-mapping sequence of length ``n``. TRL hands
+    columns as ``list``s, but ``datasets>=4`` hands the ES leg a lazy
+    ``Column`` instead — both must be forwarded, while scalars and wrong-length
+    values are still dropped. An ``isinstance(v, list)`` check silently dropped
+    ``Column``s, starving the rubric of ``answer``/``info``/operands.
+    """
+    if isinstance(value, (str, bytes, dict)):
+        return False
+    try:
+        return len(value) == n
+    except TypeError:
+        return False
+
+
 def rubric_reward_func(rubric: Rubric, name: str | None = None) -> Callable:
     """Wrap a Rubric as a TRL ``reward_func``.
 
     With ``remove_unused_columns=False`` TRL hands every dataset column to the
-    reward function as a list aligned with ``prompts``; we forward exactly
+    reward function as a sequence aligned with ``prompts``; we forward exactly
     those (scalars and wrong-length values are dropped) so the rubric sees the
     same per-sample fields the loader produced.
     """
@@ -83,9 +100,7 @@ def rubric_reward_func(rubric: Rubric, name: str | None = None) -> Callable:
         prompts: list[str], completions: list[str], **kwargs: Any
     ) -> list[float]:
         n = len(prompts)
-        columns = {
-            k: v for k, v in kwargs.items() if isinstance(v, list) and len(v) == n
-        }
+        columns = {k: v for k, v in kwargs.items() if is_per_sample_column(v, n)}
         rows: list[tuple[str, str, dict]] = []
         for i, (prompt, completion) in enumerate(zip(prompts, completions)):
             row = {k: v[i] for k, v in columns.items()}

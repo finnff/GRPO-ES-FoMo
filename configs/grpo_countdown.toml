@@ -1,0 +1,11 @@
+# GRPO on countdown — reach a target by combining the given numbers.
+#
+#   python run.py --config configs/grpo_countdown.toml --seed 0
+#
+# Keys are RunConfig field names; any CLI flag still overrides what's here.
+method = "grpo"
+task = "countdown"
+model = "qwen3.5-0.8b"
+max_samples = 100
+max_completion_length = 256
+output_dir = "outputs/grpo-countdown"

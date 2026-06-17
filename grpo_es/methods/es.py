@@ -339,6 +339,23 @@ def _load_es_model(cfg: RunConfig) -> tuple[PreTrainedModel, int | None]:
     return model, warm_tokens
 
 
+def resolve_es_scale(cfg: RunConfig, init_norm: float, num_params: int) -> None:
+    """Auto-scale σ and the trust region to the adapter geometry, in place.
+
+    σ and R left at the ``-1`` sentinel are derived from ``init_norm`` so the
+    defaults transfer across model sizes: σ makes the per-member noise norm
+    ``σ·√P`` equal ``es_noise_ratio`` of ``init_norm``, and ``R =
+    es_trust_ratio·init_norm``. A fixed σ does not transfer — its noise norm
+    grows with √P, so a constant tuned on a small LoRA buries a larger one's
+    init under the perturbations (gibberish from step 1). Explicit positive
+    values pass through untouched; ``es_trust_region=0`` stays off.
+    """
+    if cfg.es_sigma < 0:
+        cfg.es_sigma = cfg.es_noise_ratio * init_norm / math.sqrt(num_params)
+    if cfg.es_trust_region < 0:
+        cfg.es_trust_region = cfg.es_trust_ratio * init_norm
+
+
 def _log_calibration(engine: ESEngine, cfg: RunConfig, num_rows: int) -> None:
     """Startup line on the σ/θ_init geometry, plus a warning when a warm-start's
     per-step noise norm (~σ·√P) dwarfs the init it should refine — at which
@@ -359,12 +376,15 @@ def _log_calibration(engine: ESEngine, cfg: RunConfig, num_rows: int) -> None:
         noise_norm,
         cfg.es_trust_region or "off",
     )
-    if cfg.es_init_adapter and noise_norm > init_norm:
+    if noise_norm > init_norm:
+        anchor = "warm-start adapter" if cfg.es_init_adapter else "cold LoRA init"
         logger.warning(
-            "per-step noise norm %.1f exceeds the warm-start adapter norm %.1f "
-            "— σ this large is known to bury the init under the perturbations; "
-            "lower --es-sigma until σ·√P sits well below the adapter norm",
+            "per-step noise norm %.1f exceeds the %s norm %.1f — σ this large "
+            "buries the init under the perturbations (gibberish completions); "
+            "lower --es-sigma or use the -1 auto default so σ·√P sits well "
+            "below the init norm",
             noise_norm,
+            anchor,
             init_norm,
         )
 
@@ -394,6 +414,12 @@ def run_es(cfg: RunConfig) -> Path:
         seed=cfg.seed,
         trust_region=cfg.es_trust_region,
     )
+    # Resolve auto σ/R now that the adapter geometry is known, then push the
+    # resolved values back onto the engine so the first step uses them (and
+    # run_config.json records the real numbers, not the -1 sentinels).
+    resolve_es_scale(cfg, engine.init_norm(), engine.num_params)
+    engine.sigma = cfg.es_sigma
+    engine.trust_region = cfg.es_trust_region
     decode = DecodeParams(
         decode="greedy" if cfg.es_greedy_fitness or cfg.temperature <= 0 else "sample",
         temperature=cfg.temperature,
@@ -427,7 +453,10 @@ def run_es(cfg: RunConfig) -> Path:
         )
         batch = train_ds.select(idx)
         prompts = batch["prompt"]
-        columns = {c: batch[c] for c in batch.column_names if c != "prompt"}
+        # datasets>=4 returns a lazy Column from batch[c]; materialize to real
+        # lists so the reward seam forwards them (see is_per_sample_column) and
+        # nothing downstream sees a Column.
+        columns = {c: list(batch[c]) for c in batch.column_names if c != "prompt"}
 
         noise = engine.sample_noise(step, cfg.es_population)
         # One sampling seed per step (distinct prime stride keeps it off the

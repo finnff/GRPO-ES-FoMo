@@ -80,14 +80,20 @@ class RunConfig:
     # separate from `learning_rate` because a rank-utility step size is not
     # comparable to an Adam learning rate.
     es_population: int = 32  # antithetic pairs -> 2N generations per step
-    es_sigma: float = 0.03  # perturbation scale in the fp32 LoRA subspace
+    # sigma/trust_region default to -1 = auto-scale to the adapter geometry
+    # (see resolve_es_scale): a fixed sigma's per-member noise norm sigma*sqrt(P)
+    # grows with the LoRA parameter count, so a constant that suits a 135M LoRA
+    # scrambles a 1.2B one. Auto keeps the noise a fixed fraction of init_norm.
+    es_sigma: float = -1.0  # perturbation scale; -1 = es_noise_ratio*init_norm/sqrt(P)
+    es_noise_ratio: float = 0.2  # auto-sigma target: ||sigma*eps|| / init_norm
     es_lr: float = 0.05
     es_steps: int = 200  # ES iterations (ES has no epoch notion)
     es_eval_batch: int = 8  # prompts scored per member per step
     es_greedy_fitness: bool = False  # greedy instead of temperature-matched sampling
     es_member_batch: int = 8  # members per batched generate call (VRAM lever)
     es_init_adapter: str | None = None  # warm-start adapter; its run's tokens get charged
-    es_trust_region: float = 0.0  # cap on ||theta - theta_init||_2 (0 = off)
+    es_trust_region: float = -1.0  # cap on ||theta-theta_init||_2; -1 = auto, 0 = off
+    es_trust_ratio: float = 0.25  # auto-trust target: R / init_norm
 
     # Logging.
     verbose: bool = False
@@ -218,7 +224,19 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         help="antithetic pairs per ES step (2N generations)",
     )
-    opt("--es-sigma", default=d.es_sigma, type=float)
+    opt(
+        "--es-sigma",
+        default=d.es_sigma,
+        type=float,
+        help="perturbation scale in the LoRA subspace; -1 auto-scales to "
+        "es_noise_ratio * init_norm / sqrt(num_params)",
+    )
+    opt(
+        "--es-noise-ratio",
+        default=d.es_noise_ratio,
+        type=float,
+        help="auto-sigma target: per-member noise norm as a fraction of init_norm",
+    )
     opt("--es-lr", default=d.es_lr, type=float)
     opt("--es-steps", default=d.es_steps, type=int)
     opt(
@@ -246,7 +264,14 @@ def _build_parser() -> argparse.ArgumentParser:
         default=d.es_trust_region,
         type=float,
         metavar="R",
-        help="project ||theta - theta_init||_2 back to R after each step (0 = off)",
+        help="project ||theta - theta_init||_2 back to R after each step; "
+        "-1 auto-scales to es_trust_ratio * init_norm, 0 = off",
+    )
+    opt(
+        "--es-trust-ratio",
+        default=d.es_trust_ratio,
+        type=float,
+        help="auto-trust target: trust-region radius R as a fraction of init_norm",
     )
 
     flag("-v", "--verbose")

@@ -4,20 +4,24 @@
 #   python run.py --config configs/es_warm_tr.toml \
 #       --task ifeval --es-init-adapter outputs/<grpo-run>/checkpoint-final
 #
-# Calibration rules behind these numbers (they move together, don't tweak one):
-#   - sigma: hold the per-step noise norm sigma*sqrt(P) around ~5 — well below
-#     a typical honest adapter norm (~13). At the default LoRA size
-#     (r=16 on q/k/v/o, P~1.1M) that gives sigma=0.005; scale sigma by
-#     1/sqrt(P) if the adapter grows. Too large and the very first population
-#     buries the init it was meant to refine (the startup log warns).
-#   - trust region: R ~ 0.6x the init adapter's norm. Token-spam collapse
-#     lives at adapter norms ~15-40x an honest solution, so the cap removes
-#     that basin geometrically; watch theta_dev in the step logs to see
-#     whether it binds.
+# sigma and the trust region are left on the -1 auto default, so both scale to
+# the adapter geometry (sigma = es_noise_ratio*init_norm/sqrt(P),
+# R = es_trust_ratio*init_norm) and this recipe transfers across model sizes
+# unchanged — no hand-scaling sigma by 1/sqrt(P) when the LoRA grows (a fixed
+# sigma's noise norm sigma*sqrt(P) grows with P and buries a larger init). The
+# two ratios below carry the refiner intent:
+#   - es_noise_ratio 0.4: per-step noise norm sigma*sqrt(P) ~= 0.4x the init
+#     adapter norm. Below 1 so the first population never buries the init it is
+#     meant to refine (the startup log warns if noise > init).
+#   - es_trust_ratio 0.6: cap ||theta - theta_init|| at 0.6x the init norm.
+#     Token-spam collapse lives at adapter norms ~15-40x an honest solution, so
+#     the cap removes that basin geometrically; watch theta_dev to see it bind.
+# es_lr stays tiny (1e-4) so the natural step lands INSIDE the trust region and
+# the refiner converges finely rather than pinning the cap every step.
 method = "es"
 es_population = 8
-es_sigma = 0.005
+es_noise_ratio = 0.4
+es_trust_ratio = 0.6
 es_lr = 1e-4
 es_steps = 40
-es_trust_region = 8.0
 output_dir = "outputs/es-warm-tr"

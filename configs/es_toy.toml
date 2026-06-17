@@ -1,0 +1,17 @@
+# ES on the toy last-letter task — the fastest ES cell; a cross-method baseline.
+# sigma and the trust region are left on the -1 auto default, so both scale to
+# the LoRA geometry (sigma = es_noise_ratio*init_norm/sqrt(P),
+# R = es_trust_ratio*init_norm) — no manual per-model-size calibration.
+#
+#   python run.py --config configs/es_toy.toml --seed 0
+#
+# Keys are RunConfig field names; any CLI flag still overrides what's here.
+method = "es"
+task = "toy"
+model = "qwen3.5-0.8b"
+max_samples = 64           # prompt pool; es_eval_batch are sampled per step
+es_population = 16         # 32 antithetic members per step
+es_eval_batch = 8
+es_steps = 40
+max_completion_length = 128
+output_dir = "outputs/es-toy"

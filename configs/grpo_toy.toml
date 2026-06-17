@@ -1,0 +1,11 @@
+# GRPO on the toy last-letter task — the fastest real cell; a cross-method baseline.
+#
+#   python run.py --config configs/grpo_toy.toml --seed 0
+#
+# Keys are RunConfig field names; any CLI flag still overrides what's here.
+method = "grpo"
+task = "toy"
+model = "qwen3.5-0.8b"
+max_samples = 100
+max_completion_length = 128
+output_dir = "outputs/grpo-toy"

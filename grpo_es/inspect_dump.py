@@ -22,6 +22,7 @@ from transformers import PreTrainedTokenizerBase
 from verifiers.rubrics.rubric import Rubric
 
 from grpo_es.eval.metrics import score_completions
+from grpo_es.rewards.trl_bridge import is_per_sample_column
 
 
 class InspectDumper:
@@ -125,9 +126,7 @@ def make_inspect_reward_func(
             return zeros
 
         n = len(prompts)
-        columns = {
-            k: v for k, v in kwargs.items() if isinstance(v, list) and len(v) == n
-        }
+        columns = {k: v for k, v in kwargs.items() if is_per_sample_column(v, n)}
         items: list[dict] = []
         groups = min(max_prompts, n // num_generations) if num_generations else 0
         for g in range(groups):
