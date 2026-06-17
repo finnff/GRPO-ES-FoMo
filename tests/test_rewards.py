@@ -36,6 +36,17 @@ def test_toy_rubric_exact_match():
     assert func(prompts, completions, answer=["tg", "tg"]) == [1.0, 0.0]
 
 
+def test_bridge_forwards_non_list_columns():
+    # datasets>=4 hands the ES leg a lazy Column, not a list; the seam must
+    # still forward per-sample columns or the rubric scores against missing
+    # data (empty answer -> every completion wrong). A tuple stands in for any
+    # non-list length-n sequence.
+    func = rubric_reward_func(get_rubric("toy"))
+    prompts = ["Concatenate the last letters of: cat, dog"] * 2
+    completions = ["<think>...</think><answer>tg</answer>", "<answer>xx</answer>"]
+    assert func(prompts, completions, answer=("tg", "tg")) == [1.0, 0.0]
+
+
 def test_toy_rubric_rejects_bare_answer():
     # The bare-answer reward hack: a tag-less "tg" must NOT score — only an
     # answer delivered inside the <answer> scaffold earns task reward.

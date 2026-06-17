@@ -1,0 +1,16 @@
+# ES on IFEval — structural instruction-following.
+# sigma/trust-region auto-scale to the LoRA geometry (the -1 defaults).
+# Hub-backed task: needs .venv-prime (see README).
+#
+#   python run.py --config configs/es_ifeval.toml --seed 0
+#
+# Keys are RunConfig field names; any CLI flag still overrides what's here.
+method = "es"
+task = "ifeval"
+model = "qwen3.5-0.8b"
+max_samples = 64
+es_population = 16
+es_eval_batch = 8
+es_steps = 40
+max_completion_length = 512
+output_dir = "outputs/es-ifeval"

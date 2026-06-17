@@ -12,7 +12,8 @@ import pytest
 import torch
 from peft import LoraConfig, get_peft_model
 
-from grpo_es.methods.es import ESEngine, _warm_start_tokens, centered_ranks
+from grpo_es.config.run_config import RunConfig
+from grpo_es.methods.es import ESEngine, _warm_start_tokens, centered_ranks, resolve_es_scale
 
 _K = 3  # prompts per member in the forward tests
 
@@ -35,6 +36,25 @@ def _engine(**overrides) -> ESEngine:
     fields = dict(sigma=0.1, lr=0.5, seed=0)
     fields.update(overrides)
     return ESEngine(_tiny_peft(), **fields)
+
+
+def test_resolve_es_scale_auto_scales_to_init_geometry():
+    # -1 sentinels derive from init_norm so the noise norm sigma*sqrt(P) is a
+    # fixed fraction of init_norm regardless of P (the whole point: a constant
+    # sigma's noise grows with the LoRA size and scrambles larger models).
+    cfg = RunConfig(es_sigma=-1.0, es_noise_ratio=0.2, es_trust_region=-1.0, es_trust_ratio=0.25)
+    resolve_es_scale(cfg, init_norm=10.0, num_params=10_000)  # sqrt(P) = 100
+    assert cfg.es_sigma == pytest.approx(0.2 * 10.0 / 100)  # 0.02
+    assert cfg.es_sigma * (10_000**0.5) == pytest.approx(0.2 * 10.0)  # noise = ratio*init
+    assert cfg.es_trust_region == pytest.approx(0.25 * 10.0)  # 2.5
+
+
+def test_resolve_es_scale_passes_explicit_values_through():
+    # A positive sigma and an explicit trust region (incl. 0 = off) are honored.
+    cfg = RunConfig(es_sigma=0.005, es_trust_region=0.0)
+    resolve_es_scale(cfg, init_norm=10.0, num_params=10_000)
+    assert cfg.es_sigma == 0.005  # untouched
+    assert cfg.es_trust_region == 0.0  # explicit "off" survives auto-resolution
 
 
 def test_centered_ranks_values_and_zero_sum():

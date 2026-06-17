@@ -1,0 +1,17 @@
+# ES on MMLU-Pro — 10-way MCQ.
+# sigma/trust-region auto-scale to the LoRA geometry (the -1 defaults).
+#
+#   python run.py --config configs/es_mmlu_pro.toml --seed 0
+#
+# Keys are RunConfig field names; any CLI flag still overrides what's here.
+method = "es"
+task = "mmlu_pro"
+model = "qwen3.5-0.8b"
+max_samples = 64
+es_population = 16
+es_eval_batch = 8
+es_steps = 40
+# 10 options inflate the prompt; Qwen rambles, so give completions room.
+max_prompt_length = 1024
+max_completion_length = 768
+output_dir = "outputs/es-mmlu_pro"
