@@ -56,6 +56,15 @@ class RunConfig:
     max_completion_length: int = 512
     temperature: float = 1.0
     repetition_penalty: float = 1.0
+    # Wrap each prompt in the model's chat template (user turn + generation
+    # prompt) before generation. Instruct models were tuned to see that turn
+    # structure; feeding them the bare instruction string drops them out of
+    # distribution (empty/EOS completions, off-topic document continuation).
+    # "auto" applies it iff the tokenizer ships a chat template (instruct models
+    # do, most base models don't); "on"/"off" force it. Applied identically in
+    # both legs and eval — the train==eval invariant — and only changes the
+    # model input, never the raw response the rubric grades.
+    chat_template: str = "auto"
 
     # Optimization.
     learning_rate: float = 2e-5
@@ -196,6 +205,13 @@ def _build_parser() -> argparse.ArgumentParser:
     opt("--max-completion-length", default=d.max_completion_length, type=int)
     opt("--temperature", default=d.temperature, type=float)
     opt("--repetition-penalty", default=d.repetition_penalty, type=float)
+    opt(
+        "--chat-template",
+        default=d.chat_template,
+        choices=("auto", "on", "off"),
+        help="wrap prompts in the model's chat template; auto = on iff the "
+        "tokenizer ships one (instruct models do)",
+    )
 
     opt("--learning-rate", default=d.learning_rate, type=float)
     opt("--num-train-epochs", default=d.num_train_epochs, type=float)

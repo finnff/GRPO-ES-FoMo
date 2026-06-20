@@ -23,7 +23,7 @@ from grpo_es.methods.callbacks import CompactMetricsCallback, InspectStepCallbac
 from grpo_es.metrics.budget import extract_trl_token_budget
 from grpo_es.models import lora_config
 from grpo_es.rewards.registry import get_rubric, make_trl_reward_funcs
-from grpo_es.tasks.base import build_dataset
+from grpo_es.tasks.base import apply_chat_template, build_dataset
 from grpo_es.tasks.registry import get_task_spec
 
 logger = logging.getLogger(__name__)
@@ -117,6 +117,11 @@ def run_grpo(cfg: RunConfig) -> Path:
     tokenizer = AutoTokenizer.from_pretrained(cfg.model, padding_side="left")
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+
+    # Wrap prompts in the chat template (instruct models need it) — identically
+    # to the ES leg and eval, so the train==eval invariant holds. TRL leaves an
+    # already-templated string prompt untouched (it only templates message lists).
+    train_ds = apply_chat_template(train_ds, tokenizer, cfg.chat_template)
 
     out = Path(cfg.output_dir)
     out.mkdir(parents=True, exist_ok=True)

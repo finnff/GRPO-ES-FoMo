@@ -43,6 +43,44 @@ class TaskSpec:
     metric_label: str = "solve_rate"
 
 
+def chat_template_enabled(mode: str, tok) -> bool:
+    """Whether to wrap prompts in the model's chat template.
+
+    ``auto`` turns it on iff the tokenizer ships a chat template — instruct
+    models do, most base models don't — so the common case needs no per-model
+    flag. ``on``/``off`` force it.
+    """
+    if mode == "on":
+        return True
+    if mode == "off":
+        return False
+    return getattr(tok, "chat_template", None) is not None
+
+
+def apply_chat_template(dataset: Dataset, tok, mode: str = "auto") -> Dataset:
+    """Rewrite the ``prompt`` column as a templated user turn (+ generation
+    prompt), so an instruct model sees the turn structure it was tuned for.
+
+    Called identically in both method legs and the eval runner — that keeps the
+    train==eval invariant. The template only changes the model *input*; the raw
+    response the rubric grades is untouched. A no-op when disabled (``off``, or
+    ``auto`` on a base model without a template).
+    """
+    if not chat_template_enabled(mode, tok):
+        return dataset
+
+    def _wrap(row: dict) -> dict:
+        return {
+            "prompt": tok.apply_chat_template(
+                [{"role": "user", "content": row["prompt"]}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        }
+
+    return dataset.map(_wrap, load_from_cache_file=False, desc="chat-template")
+
+
 def shuffle_take(dataset: Dataset, seed: int, max_samples: int | None) -> Dataset:
     """Seeded shuffle keeping the first ``max_samples`` rows (all if ``None``).
 
