@@ -24,7 +24,7 @@ from grpo_es.eval.metrics import coherence_gate
 from grpo_es.eval.runner import DecodeParams, evaluate_adapter, load_tokenizer
 from grpo_es.models import resolve_model_alias
 from grpo_es.rewards.registry import get_rubric
-from grpo_es.tasks.base import build_eval_dataset
+from grpo_es.tasks.base import apply_chat_template, build_eval_dataset
 from grpo_es.tasks.registry import get_task_spec
 
 
@@ -77,6 +77,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "explicit decode flags still win per-field",
     )
     p.add_argument("--seed", type=int, default=0, help="generation seed (per adapter)")
+    p.add_argument(
+        "--chat-template",
+        choices=("auto", "on", "off"),
+        default="auto",
+        help="wrap prompts in the chat template; MUST match how the adapter was "
+        "trained (auto = on iff the tokenizer ships one)",
+    )
     p.add_argument(
         "--kl",
         action="store_true",
@@ -202,9 +209,10 @@ def main(argv: list[str] | None = None) -> int:
     adapters = ["base"] + [a for a in args.adapter if a != "base"]
 
     tok = load_tokenizer(model_id)
+    dataset = apply_chat_template(dataset, tok, args.chat_template)
     print(
         f"task={spec.name} model={model_id} holdout={len(dataset)} "
-        f"decode={decode.label()} max_new={decode.max_new}"
+        f"decode={decode.label()} chat_template={args.chat_template} max_new={decode.max_new}"
     )
     label = spec.metric_label
     print(

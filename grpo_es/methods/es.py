@@ -39,7 +39,7 @@ from grpo_es.inspect_dump import InspectDumper, build_records
 from grpo_es.metrics.budget import TokenBudgetLog
 from grpo_es.models import lora_config
 from grpo_es.rewards.registry import get_rubric, make_trl_reward_funcs
-from grpo_es.tasks.base import TaskSpec, build_dataset
+from grpo_es.tasks.base import TaskSpec, apply_chat_template, build_dataset
 from grpo_es.tasks.registry import get_task_spec
 
 logger = logging.getLogger(__name__)
@@ -405,6 +405,8 @@ def run_es(cfg: RunConfig) -> Path:
     fitness = _make_fitness(cfg, spec)
 
     tok = load_tokenizer(cfg.model)
+    # Same chat-template wrap as GRPO + eval (train==eval invariant).
+    train_ds = apply_chat_template(train_ds, tok, cfg.chat_template)
     model, warm_tokens = _load_es_model(cfg)
 
     # Construct with safe placeholders for any -1 auto sentinels — a negative σ
