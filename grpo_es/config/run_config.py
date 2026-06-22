@@ -10,7 +10,10 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib  # Python 3.10 backport
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
