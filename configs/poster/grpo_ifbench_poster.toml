@@ -1,0 +1,36 @@
+# POSTER cell (HEADROOM pivot) — GRPO leg, LFM2.5-350M on IFBench.
+# IFEval is near-saturated on this base (0.868), so neither method could show a
+# gain there. IFBench is the same model's weak spot (base 0.325) → room to climb,
+# which is what makes the "both methods do good post-training" claim testable.
+# The robust gradient reference: KL-anchored to base (beta). Hub task: .venv-prime.
+#
+#   python run.py --config configs/grpo_ifbench_poster.toml --seed 0 \
+#       --output-dir outputs/poster_ifbench/grpo_ifbench_s0
+#
+# Keys are RunConfig field names; any CLI flag still overrides what's here.
+method = "grpo"
+task = "ifbench"
+model = "lfm2.5-350m"
+
+# IFBench has only 300 rows; the spec holds out 100 → 200 available for training,
+# so max_samples must stay <= 200. 150 gives ~150 optimizer steps (8x8 rollout),
+# more room to climb on the harder task than the 100 used for the saturated ifeval.
+max_samples = 150
+num_train_epochs = 1.0
+max_prompt_length = 512
+# IFBench instructions include "write 400+ words"; eval generates up to 1024 new
+# tokens, so train at 768 (vs ifeval's 512) to avoid a train/eval length mismatch
+# that would cap reward on the long-form instructions and hide a real climb.
+max_completion_length = 768
+
+# LFM2.5-350M ships a chat template; use it (raw prompts give empty/off-topic
+# output on instruct models). "on" forces the wrap; eval MUST use the same setting.
+chat_template = "on"
+
+# KL-to-base anchor: the whole reason GRPO is the robust leg. Default beta.
+beta = 0.04
+learning_rate = 2e-5
+
+# Checkpoint every 25 steps so the held-out curve has several points, not just final.
+save_steps = 25
+output_dir = "outputs/poster_ifbench/grpo_ifbench"

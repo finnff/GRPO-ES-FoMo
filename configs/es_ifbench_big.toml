@@ -1,0 +1,40 @@
+# POSTER probe — ES leg (HIGHER-POWER), LFM2.5-350M on IFBench.
+# Hypothesis: stabilized ES plateaued on IFBench (350M 3-seed Δ=-0.002 vs base)
+# not because it's worse than GRPO but because its natural-gradient estimate is
+# UNDER-POWERED — each member scored on only 8 prompts (coarse fitness) and only
+# 16 antithetic directions per step (noisy gradient). This config triples the
+# per-step generation budget to test that:
+#
+#   es_population  16 -> 24   (48 antithetic members per step; more directions)
+#   es_eval_batch   8 -> 16   ("sample generations": less noisy per-member fitness)
+#   max_samples    64 -> 128  (bigger prompt pool to sample those 16 from; <=200 avail)
+#
+# Everything else is IDENTICAL to es_ifbench_poster.toml — crucially sigma and
+# the trust region stay on the -1 auto default, which scales to the LoRA *param*
+# count, NOT the population. So the stabilization is byte-for-byte the same; the
+# ONLY thing that changes is gradient-estimate quality. Clean isolation.
+#
+#   SEEDS="0" TRAIN_TASK=ifbench OUT_OVERRIDE=outputs/poster_ifbench_biges \
+#     ES_CFG=configs/es_ifbench_big.toml SKIP_NAIVE=1 bash scripts/poster_sweep.sh
+#
+# Keys are RunConfig field names; any CLI flag still overrides what's here.
+method = "es"
+task = "ifbench"
+model = "lfm2.5-350m"
+
+max_samples = 128         # prompt pool (<= 200 available); es_eval_batch sampled per step
+es_population = 24         # 48 antithetic members per step (was 16/32)
+es_eval_batch = 16        # prompts scored per member per step (was 8)
+es_steps = 40             # same optimization horizon as the lean config (isolate gradient quality)
+max_prompt_length = 512
+max_completion_length = 768
+
+chat_template = "on"
+
+# Same stabilization as es_ifbench_poster.toml (auto, param-scaled — unaffected by
+# the population/batch change above). This is the whole point of the controlled test.
+es_sigma = -1.0
+es_trust_region = -1.0
+
+save_steps = 20
+output_dir = "outputs/poster_ifbench_biges/es_ifbench"

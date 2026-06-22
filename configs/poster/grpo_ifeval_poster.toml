@@ -1,0 +1,34 @@
+# POSTER cell — GRPO leg, LFM2.5-350M on IFEval.
+# The robust gradient reference: KL-anchored to the base (beta), so it resists
+# the degenerate basins ES falls into. This is the bar ES has to match.
+# Hub-backed task: needs .venv-prime (see README).
+#
+#   python run.py --config configs/grpo_ifeval_poster.toml --seed 0 \
+#       --output-dir outputs/poster/grpo_ifeval_s0
+#
+# Keys are RunConfig field names; any CLI flag still overrides what's here.
+method = "grpo"
+task = "ifeval"
+model = "lfm2.5-350m"
+
+# ~100 optimizer steps (global_step ~= max_samples at the default 8x8 rollout
+# shape) — where sweep-normal/grpo_ifeval converged 0.875 -> 1.0 on train reward.
+# Bump max_samples to 150-200 if the held-out curve hasn't plateaued.
+max_samples = 100
+num_train_epochs = 1.0
+max_prompt_length = 512
+max_completion_length = 512
+
+# LFM2.5-350M ships a chat template; use it (the model follows instructions far
+# better with the user-turn structure — raw prompts give empty/off-topic output).
+# "on" forces the wrap; eval MUST use the same setting.
+chat_template = "on"
+
+# KL-to-base anchor: the whole reason GRPO is the robust leg. Keep at the
+# default unless you are deliberately studying how far it can be loosened.
+beta = 0.04
+learning_rate = 2e-5
+
+# Checkpoint every 25 steps so the held-out curve has 4 points, not just final.
+save_steps = 25
+output_dir = "outputs/poster/grpo_ifeval"

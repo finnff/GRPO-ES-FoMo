@@ -1,0 +1,30 @@
+# POSTER "both improve" cell — ES leg (STABILIZED), LFM2.5-1.2B on GSM8K.
+# Antithetic LoRA-subspace search with the parameter-space trust region ON
+# (weight-space analogue of GRPO's KL anchor). sigma + trust region on the -1
+# auto default (scale to the adapter geometry). Same cell as grpo_gsm8k_poster:
+# 1.2B base solve 0.75 with headroom on correctness AND the scaffold (fmt 0.005).
+#
+#   python run.py --config configs/es_gsm8k_poster.toml --seed 0 \
+#       --output-dir outputs/poster_gsm8k/es_gsm8k_s0
+#
+# Keys are RunConfig field names; any CLI flag still overrides what's here.
+method = "es"
+task = "gsm8k"
+model = "lfm2.5-1.2b"
+
+max_samples = 64          # prompt pool; es_eval_batch sampled per step
+es_population = 16        # 32 antithetic members per step
+es_eval_batch = 8
+es_steps = 40
+max_prompt_length = 512
+max_completion_length = 768   # match GRPO/eval (long CoT)
+
+chat_template = "on"
+
+# Stabilization (auto, param-scaled). The trust region is what keeps ES honest;
+# watch theta_dev stay pinned in the step log.
+es_sigma = -1.0
+es_trust_region = -1.0
+
+save_steps = 20
+output_dir = "outputs/poster_gsm8k/es_gsm8k"

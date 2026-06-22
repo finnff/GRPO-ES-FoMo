@@ -1,0 +1,35 @@
+# POSTER cell (HEADROOM pivot) — ES leg (STABILIZED), LFM2.5-350M on IFBench.
+# Antithetic LoRA-subspace search with the parameter-space trust region ON (the
+# weight-space analogue of GRPO's KL anchor). sigma and the trust region stay on
+# the -1 auto default, so both scale to the adapter geometry and this recipe
+# transfers across model sizes unchanged. Hub task: needs .venv-prime.
+#
+#   python run.py --config configs/es_ifbench_poster.toml --seed 0 \
+#       --output-dir outputs/poster_ifbench/es_ifbench_s0
+#
+# Keys are RunConfig field names; any CLI flag still overrides what's here.
+method = "es"
+task = "ifbench"
+model = "lfm2.5-350m"
+
+max_samples = 64          # prompt pool (<= 200 available); es_eval_batch sampled per step
+es_population = 16         # 32 antithetic members per step
+es_eval_batch = 8
+es_steps = 40
+max_prompt_length = 512
+max_completion_length = 768   # match GRPO/eval length budget (see grpo_ifbench_poster.toml)
+
+# Use the model's chat template (same as the GRPO leg). Eval must match (train==eval).
+chat_template = "on"
+
+# Stabilization (the point of this leg). Both auto-scale to the LoRA geometry:
+#   es_sigma = -1        -> es_noise_ratio * init_norm / sqrt(P)
+#   es_trust_region = -1 -> es_trust_ratio * init_norm   (ON; 0 would disable it)
+# The token-spam basin sits at adapter norms ~15-40x an honest solution, so the
+# cap removes it geometrically. IFBench is more hack-prone than IFEval, so this
+# leg is exactly what keeps ES competitive here. Watch theta_dev in the step log.
+es_sigma = -1.0
+es_trust_region = -1.0
+
+save_steps = 20
+output_dir = "outputs/poster_ifbench/es_ifbench"

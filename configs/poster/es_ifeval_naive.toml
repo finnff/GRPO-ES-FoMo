@@ -1,0 +1,37 @@
+# POSTER cell — ES leg (NAIVE / reward-hacker demo), LFM2.5-350M on IFEval.
+# Same ES as es_ifeval_poster.toml but with the trust region OFF and a larger
+# noise ratio, i.e. cold-start ES with nothing holding the search near a good
+# point. This is the FAILURE leg: it games the per-instruction checker by
+# drifting into the token-spam basin — train fitness can look fine for a while
+# while held-out instruction_rate, the coherence gate, and completion length
+# all go bad. It exists to make the "stabilization matters" contrast on the
+# poster, not to compete. Hub-backed task: needs .venv-prime (see README).
+#
+#   python run.py --config configs/es_ifeval_naive.toml --seed 0 \
+#       --output-dir outputs/poster/es_ifeval_naive_s0
+#
+# Keys are RunConfig field names; any CLI flag still overrides what's here.
+method = "es"
+task = "ifeval"
+model = "lfm2.5-350m"
+
+max_samples = 64
+es_population = 16
+es_eval_batch = 8
+es_steps = 40
+max_prompt_length = 512
+max_completion_length = 512
+
+# Same chat template as the stabilized leg, so the ONLY difference between this
+# and es_ifeval_poster is the missing trust region.
+chat_template = "on"
+
+# The two levers that make it hack:
+#   es_trust_region = 0   -> trust region DISABLED (no weight-space anchor)
+#   es_noise_ratio  = 0.6 -> per-member noise ~0.6x init norm (large drift)
+# Expect theta_dev to climb into the hundreds/thousands and mean_len to blow up.
+es_trust_region = 0.0
+es_noise_ratio = 0.6
+
+save_steps = 20
+output_dir = "outputs/poster/es_ifeval_naive"
