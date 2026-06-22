@@ -1,0 +1,13 @@
+# GRPO on reverse-text — output the input string reversed.
+# Hub-backed task: needs .venv-prime (see README).
+# Install once: scripts/setup_prime_venv.sh primeintellect/reverse-text
+#
+#   python run.py --config configs/grpo_reverse_text.toml --seed 0
+#
+# Keys are RunConfig field names; any CLI flag still overrides what's here.
+method = "grpo"
+task = "env:primeintellect/reverse-text"
+model = "qwen3.5-0.8b"
+max_samples = 100
+max_completion_length = 1024
+output_dir = "outputs/grpo-reverse-text"
