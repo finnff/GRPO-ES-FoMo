@@ -445,6 +445,34 @@ def run_es(cfg: RunConfig) -> Path:
 
     _log_calibration(engine, cfg, len(train_ds))
 
+    # Optional trackio logging — the GRPO leg gets this for free via TRL's
+    # report_to; the ES loop is hand-rolled, so mirror it here. Lazy-imported and
+    # fully guarded: a tracking failure must never take down a training run.
+    tracker = None
+    if cfg.use_trackio:
+        try:
+            import trackio
+
+            trackio.init(
+                project=Path(cfg.output_dir).name,
+                name="es",
+                space_id=cfg.trackio_space_id,
+                config={
+                    "method": "es",
+                    "model": cfg.model,
+                    "task": cfg.task,
+                    "seed": cfg.seed,
+                    "es_population": cfg.es_population,
+                    "es_eval_batch": cfg.es_eval_batch,
+                    "es_steps": cfg.es_steps,
+                    "es_sigma": cfg.es_sigma,
+                    "es_trust_region": cfg.es_trust_region,
+                },
+            )
+            tracker = trackio
+        except Exception as exc:  # noqa: BLE001 — logging is never fatal
+            logger.warning("trackio init failed (%s); continuing without it", exc)
+
     # The mini-batch picker rides the optimizer seed (like GRPO's data order),
     # not data_seed — the train slice itself is already pinned by data_seed.
     batch_rng = random.Random(cfg.seed)
@@ -531,6 +559,22 @@ def run_es(cfg: RunConfig) -> Path:
         }
         with history_path.open("a") as fh:
             fh.write(json.dumps(record) + "\n")
+        if tracker is not None:
+            try:
+                tracker.log(
+                    {
+                        "fitness_mean": record["fitness_mean"],
+                        "fitness_best": record["fitness_best"],
+                        "mean_len": record["mean_len"],
+                        "empty_frac": record["empty_frac"],
+                        "theta_dev": record["theta_dev"],
+                        "tokens": float(total_tokens),
+                        "step_time": record["step_time"],
+                    },
+                    step=step + 1,
+                )
+            except Exception:  # noqa: BLE001 — logging is never fatal
+                pass
         logger.info(
             "step %d/%d fitness mean=%.4f best=%.4f mean_len=%.0f empty=%.2f "
             "tokens=%d theta_dev=%.2f step_time=%.1f",
@@ -562,6 +606,12 @@ def run_es(cfg: RunConfig) -> Path:
     if torch.cuda.is_available():
         budget.peak_vram_bytes = int(torch.cuda.max_memory_allocated())
     budget.save(out / "token_budget.json")
+
+    if tracker is not None:
+        try:
+            tracker.finish()
+        except Exception:  # noqa: BLE001 — logging is never fatal
+            pass
 
     logger.info("ES finished; artifacts in %s", out)
     return out

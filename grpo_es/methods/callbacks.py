@@ -21,6 +21,8 @@ class CompactMetricsCallback(TrainerCallback):
         "reward": ".4f",
         "rewards/ToyRubric/mean": ".4f",
         "rewards/CountdownRubric/mean": ".4f",
+        "rewards/PydanticGradedRubric/mean": ".4f",
+        "rewards/AsciiTreeGlyphNormRubric/mean": ".4f",
         "rewards/format_reward_func/mean": ".4f",
         "completions/clipped_ratio": ".3f",
         "kl": ".4f",

@@ -69,12 +69,26 @@ def apply_chat_template(dataset: Dataset, tok, mode: str = "auto") -> Dataset:
     if not chat_template_enabled(mode, tok):
         return dataset
 
+    # Hybrid-reasoning models (e.g. Qwen3.5) default their template to an OPEN
+    # ``<think>`` block, so the model spends its whole completion budget on a
+    # chain-of-thought preamble and never reaches the answer on these short,
+    # structured tasks (observed: Qwen3.5-4B clipped at 99% on ascii-tree,
+    # reward ~0). Force thinking OFF (the empty ``<think></think>`` prefill) for
+    # any template that exposes the switch; this is a no-op for templates that
+    # don't reference it (LFM2.5, SmolLM2), so it cannot perturb the existing
+    # poster legs. Applied here means train AND eval get it identically — the
+    # train==eval invariant holds.
+    extra = {}
+    if "enable_thinking" in (getattr(tok, "chat_template", "") or ""):
+        extra["enable_thinking"] = False
+
     def _wrap(row: dict) -> dict:
         return {
             "prompt": tok.apply_chat_template(
                 [{"role": "user", "content": row["prompt"]}],
                 tokenize=False,
                 add_generation_prompt=True,
+                **extra,
             )
         }
 
