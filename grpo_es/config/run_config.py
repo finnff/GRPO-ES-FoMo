@@ -102,10 +102,19 @@ class RunConfig:
     es_steps: int = 200  # ES iterations (ES has no epoch notion)
     es_eval_batch: int = 8  # prompts scored per member per step
     es_greedy_fitness: bool = False  # greedy instead of temperature-matched sampling
+    es_fixed_batch: bool = False  # score every step on the SAME prompts (comparable
+    # fitness across steps + consistent gradient direction); default off = resample
     es_member_batch: int = 8  # members per batched generate call (VRAM lever)
     es_init_adapter: str | None = None  # warm-start adapter; its run's tokens get charged
     es_trust_region: float = -1.0  # cap on ||theta-theta_init||_2; -1 = auto, 0 = off
     es_trust_ratio: float = 0.25  # auto-trust target: R / init_norm
+    es_subspace_dim: int = 0  # >0 = confine the ES search to a fixed random k-dim
+    # subspace (intrinsic-dimension trick): fights the √(d/N) gradient-direction error
+    es_freeze_a: bool = False  # perturb/update only LoRA B (A stays at init) — halves d
+    es_shuffle_fitness: bool = False  # DIAGNOSTIC null control: permute the per-step
+    # antithetic advantages across noise vectors — same step magnitude, random
+    # direction (severs fitness->direction). Isolates whether selection, not mere
+    # same-norm movement, drives any held-out gain. Never use for a real run.
 
     # Logging.
     verbose: bool = False
@@ -265,6 +274,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="prompts scored per member per ES step",
     )
     flag("--es-greedy-fitness", help="greedy fitness decoding (low-variance ablation)")
+    flag(
+        "--es-fixed-batch",
+        help="score every ES step on the same eval prompts (comparable fitness "
+        "across steps; off = resample a fresh mini-batch each step)",
+    )
     opt(
         "--es-member-batch",
         default=d.es_member_batch,
@@ -291,6 +305,24 @@ def _build_parser() -> argparse.ArgumentParser:
         default=d.es_trust_ratio,
         type=float,
         help="auto-trust target: trust-region radius R as a fraction of init_norm",
+    )
+    opt(
+        "--es-subspace-dim",
+        default=d.es_subspace_dim,
+        type=int,
+        metavar="K",
+        help="confine the ES search to a fixed random K-dim subspace (0 = off, "
+        "full-dim). The intrinsic-dimension fix for the √(d/N) direction error",
+    )
+    flag(
+        "--es-freeze-a",
+        help="perturb/update only LoRA B; freeze A at init (halves the search dim)",
+    )
+    flag(
+        "--es-shuffle-fitness",
+        help="DIAGNOSTIC null control: permute each step's antithetic advantages "
+        "across noise vectors (same step magnitude, random direction) to test "
+        "whether ES selection, not mere same-norm movement, drives any gain",
     )
 
     flag("-v", "--verbose")

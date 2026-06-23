@@ -1,0 +1,52 @@
+# ES on pydantic-adherence — emit JSON that validates against a given Pydantic model.
+# Hub-backed task: needs .venv-prime (see README).
+# Install once: scripts/setup_prime_venv.sh primeintellect/pydantic-adherence
+#
+#   python run.py --config configs/es_pydantic_adherence.toml --seed 0
+#
+# GRADED REWARD + ROW-FILTER (auto-wired). The env's stock reward is binary
+# (1.0 iff the JSON validates against the per-sample schema, else 0.0), which
+# collapses ES fitness spread / GRPO within-group advantage; worse, its reward
+# fn THROWS on forward-ref schemas (they need model_rebuild(), which the env
+# never calls). The CLI env: path now (a) swaps in a spine-local graded rubric
+# — fraction of model fields that validate (grpo_es/rewards/pydantic_graded.py)
+# — and (b) drops rows whose schema can't load here, both via ENV_CUSTOMIZATIONS
+# in grpo_es/tasks/from_env.py. No flags needed. The filter calls model_rebuild()
+# (the rescue the env omits), so most forward-ref schemas now LOAD and stay
+# winnable; only genuinely-dead ones (missing optional deps like email-validator,
+# or unfixable) are dropped — 123/1971 here. No more "is not fully defined"
+# tracebacks. Schema lives in the `info` column (answer empty); survives intact.
+#
+# MEASURED LIFT (lfm2.5-1.2b, this graded reward, short ES probe): fitness mean
+# 0.026 (binary baseline) -> ~0.23, best peak 0.333 -> 0.682 — dense signal,
+# off the floor.
+method = "es"
+task = "env:primeintellect/pydantic-adherence"
+model = "lfm2.5-1.2b"
+max_samples = 64
+# Prompts embed a full Pydantic config (~1000 tok) — the 512 default would
+# truncate the schema the model is asked to satisfy. Keep train==eval (eval
+# reads these from run_config.json).
+max_prompt_length = 2048
+max_completion_length = 1024
+# es_lr: the default 0.05 SATURATES the trust region every step on this LoRA
+# geometry — coef = es_lr/(2N*sigma) ~ 0.8 puts the raw pre-clamp step at ~570x
+# R(=3.37), so the clamp pins theta_dev at R from step 1 and the master just
+# random-walks the R-sphere (theta_dev flat to 7 sig-figs, fitness DECLINES;
+# the inert poster ES, see outputs/prime/es_pydantic_s0). 2e-5 puts the raw step
+# at ~0.17x R so the cap UNBINDS and theta_dev climbs from <R (verified on
+# pydantic: 0.41 -> 0.73 -> ... not pinned). The sweep can still override via
+# --es-lr / ES_LR= (CLI beats this TOML key).
+es_lr = 2e-5
+es_population = 16
+es_eval_batch = 8
+es_steps = 40
+# Chat template ON (poster discipline): LFM2.5 ships one and bare prompts drop
+# instruct models out of distribution; eval uses the same setting (train==eval).
+chat_template = "on"
+# Checkpoint cadence matched to the poster (es_ifeval.toml).
+save_steps = 20
+# Log per-step metrics (fitness_mean/theta_dev/mean_len) to trackio; falls back
+# to history.jsonl if trackio init fails (guarded import in es.py).
+use_trackio = true
+output_dir = "outputs/es-pydantic-adherence"

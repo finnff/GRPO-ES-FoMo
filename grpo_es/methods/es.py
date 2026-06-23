@@ -48,6 +48,8 @@ logger = logging.getLogger(__name__)
 # stream never collide across (seed, step) pairs.
 _NOISE_SEED_STRIDE = 1_000_003
 _GEN_SEED_STRIDE = 7_919
+_SUBSPACE_SEED_STRIDE = 104_729  # fixed (step-independent) basis for random-subspace ES
+_SHUFFLE_SEED_STRIDE = 15_485_863  # advantage-permutation stream for the null control
 
 
 def centered_ranks(values: list[float]) -> list[float]:
@@ -80,11 +82,15 @@ class ESEngine:
         lr: float,
         seed: int,
         trust_region: float = 0.0,
+        subspace_dim: int = 0,
+        freeze_a: bool = False,
     ) -> None:
         self.sigma = sigma
         self.lr = lr
         self.seed = seed
         self.trust_region = trust_region
+        self.subspace_dim = subspace_dim
+        self.freeze_a = freeze_a
         self._model = model
         # Fixed capture order — (A, B) per LoRA layer in module-walk order;
         # every noise vector and update zips against ``params``.
@@ -103,6 +109,53 @@ class ESEngine:
         # Anchor for the trust region and the theta_dev diagnostic. For a
         # warm start this is the loaded adapter, not zero.
         self.init = [m.clone() for m in self.master]
+        # Optional intrinsic-dimension reduction: confine perturbations (and so
+        # the whole θ trajectory) to a fixed random k-dim subspace, fighting the
+        # √(d/N) direction error of the zeroth-order gradient estimate.
+        self._proj: list[torch.Tensor | None] | None = None
+        self._subspace_scale = 1.0
+        self._subspace_k = 0
+        if subspace_dim and subspace_dim > 0:
+            self._build_subspace(subspace_dim)
+
+    def _build_subspace(self, k: int) -> None:
+        """Per-tensor orthonormal block projections summing to ~k total dims.
+
+        Each perturbed tensor gets ``k_p ∝ numel`` random orthonormal columns;
+        ε = scale · Rₚ·ζₚ keeps ‖ε‖² ≈ (perturbed param count), so σ·‖ε‖ — the
+        per-member step norm the trust region is tuned against — is unchanged.
+        Only the *direction* is constrained, not the magnitude.
+        """
+        gen = torch.Generator(device=self.params[0].device)
+        gen.manual_seed(self.seed * _SUBSPACE_SEED_STRIDE)
+        active = [
+            i for i in range(len(self.params)) if not (self.freeze_a and i % 2 == 0)
+        ]
+        d_active = sum(self.params[i].numel() for i in active)
+        proj: list[torch.Tensor | None] = [None] * len(self.params)
+        ktot = 0
+        for i in active:
+            n = self.params[i].numel()
+            k_p = max(1, round(k * n / d_active))
+            r = torch.randn(n, k_p, generator=gen, device=self.params[i].device)
+            r, _ = torch.linalg.qr(r, mode="reduced")  # n × k_p, orthonormal columns
+            proj[i] = r
+            ktot += k_p
+        self._proj = proj
+        self._subspace_k = ktot
+        self._subspace_scale = math.sqrt(d_active / ktot)
+        mem = sum(r.numel() for r in proj if r is not None) * 4 / 1e6
+        logger.info(
+            "ES random subspace: k≈%d (requested %d) over %d/%d tensors, "
+            "scale=%.1f, basis=%.0f MiB%s",
+            ktot,
+            k,
+            len(active),
+            len(self.params),
+            self._subspace_scale,
+            mem,
+            " (A frozen)" if self.freeze_a else "",
+        )
 
     @property
     def num_params(self) -> int:
@@ -118,16 +171,40 @@ class ESEngine:
         )
 
     def sample_noise(self, step: int, pairs: int) -> list[list[torch.Tensor]]:
-        """``pairs`` ε-vectors shaped like θ, deterministic in (seed, step)."""
+        """``pairs`` ε-vectors shaped like θ, deterministic in (seed, step).
+
+        Full-dim isotropic by default; with a random subspace each ε = scale·R·ζ
+        (so the master trajectory stays in the fixed k-dim subspace), and with
+        ``freeze_a`` the A tensors get a zero perturbation (B-only search).
+        """
         gen = torch.Generator(device=self.params[0].device)
         gen.manual_seed(self.seed * _NOISE_SEED_STRIDE + step)
-        return [
-            [
-                torch.randn(p.shape, generator=gen, device=p.device, dtype=torch.float32)
-                for p in self.params
+        if self._proj is None and not self.freeze_a:
+            return [
+                [
+                    torch.randn(p.shape, generator=gen, device=p.device, dtype=torch.float32)
+                    for p in self.params
+                ]
+                for _ in range(pairs)
             ]
-            for _ in range(pairs)
-        ]
+        out: list[list[torch.Tensor]] = []
+        for _ in range(pairs):
+            eps: list[torch.Tensor] = []
+            for i, p in enumerate(self.params):
+                if self.freeze_a and i % 2 == 0:
+                    eps.append(torch.zeros_like(self.master[i]))
+                elif self._proj is not None:
+                    r = self._proj[i]
+                    zeta = torch.randn(
+                        r.shape[1], generator=gen, device=p.device, dtype=torch.float32
+                    )
+                    eps.append(self._subspace_scale * (r @ zeta).reshape(p.shape))
+                else:
+                    eps.append(
+                        torch.randn(p.shape, generator=gen, device=p.device, dtype=torch.float32)
+                    )
+            out.append(eps)
+        return out
 
     @contextmanager
     def population(
@@ -172,10 +249,23 @@ class ESEngine:
             p.copy_(m.to(p.dtype))
 
     @torch.no_grad()
-    def update(self, noise: list[list[torch.Tensor]], fitnesses: list[float]) -> None:
+    def update(
+        self,
+        noise: list[list[torch.Tensor]],
+        fitnesses: list[float],
+        shuffle: random.Random | None = None,
+    ) -> None:
         """One ES step: θ += lr/(2Nσ) · Σ_pairs (u⁺−u⁻)·ε, project back onto
         the trust-region ball, then sync the live module. ``fitnesses`` are
-        ordered [+ε₀, −ε₀, +ε₁, −ε₁, ...]."""
+        ordered [+ε₀, −ε₀, +ε₁, −ε₁, ...].
+
+        ``shuffle`` (the ``--es-shuffle-fitness`` null control): permute the
+        per-pair antithetic advantages across noise vectors. The step keeps the
+        same magnitude (the ε are ~orthogonal isotropic, so ‖Σ aᵢεᵢ‖² ≈ Σ aᵢ²‖εᵢ‖²
+        is permutation-invariant) but points in a ~random direction — so a
+        positive held-out Δ under shuffle means mere same-norm movement, not
+        selection, was driving it.
+        """
         assert len(fitnesses) == 2 * len(noise), (
             f"expected 2 fitnesses per noise pair, got {len(fitnesses)} for "
             f"{len(noise)} pairs"
@@ -186,8 +276,13 @@ class ESEngine:
             return
         utils = centered_ranks(fitnesses)
         coef = self.lr / (len(fitnesses) * self.sigma)
+        pair_adv = [utils[2 * pair] - utils[2 * pair + 1] for pair in range(len(noise))]
+        if shuffle is not None:
+            perm = list(range(len(pair_adv)))
+            shuffle.shuffle(perm)
+            pair_adv = [pair_adv[j] for j in perm]
         for pair, eps in enumerate(noise):
-            weight = coef * (utils[2 * pair] - utils[2 * pair + 1])
+            weight = coef * pair_adv[pair]
             for m, e in zip(self.master, eps):
                 m.add_(e, alpha=weight)
         if self.trust_region:
@@ -281,7 +376,14 @@ def _score_population(
                     tok,
                     chunk_prompts,
                     decode,
-                    seed=gen_seed,
+                    # §2 fix B: per-chunk seed = gen_seed + start. Both signs
+                    # iterate the same `start`, so CRN within each ± pair is
+                    # preserved (the chunk at `start` uses one seed for + and −),
+                    # but chunk 0 and chunk 1 now differ → no cross-chunk replay →
+                    # full `population` distinct decode streams even at small
+                    # member_batch. start ∈ 0…pop-1 ≪ _GEN_SEED_STRIDE so per-chunk
+                    # seeds stay distinct within the step and off the noise stream.
+                    seed=gen_seed + start,
                     batch_size=len(chunk_prompts),
                     progress=False,
                 )
@@ -419,6 +521,8 @@ def run_es(cfg: RunConfig) -> Path:
         lr=cfg.es_lr,
         seed=cfg.seed,
         trust_region=cfg.es_trust_region if cfg.es_trust_region >= 0 else 0.0,
+        subspace_dim=cfg.es_subspace_dim,
+        freeze_a=cfg.es_freeze_a,
     )
     # Resolve auto σ/R now that the adapter geometry is known, then push the
     # resolved values back onto the engine so the first step uses them (and
@@ -444,6 +548,20 @@ def run_es(cfg: RunConfig) -> Path:
     rubric = get_rubric(spec.rubric) if cfg.inspect_dump else None
 
     _log_calibration(engine, cfg, len(train_ds))
+    # Null control: a dedicated RNG permutes each step's antithetic advantages so
+    # the update keeps its magnitude but loses its direction. Distinct prime
+    # stride keeps it off the noise/gen/subspace streams.
+    shuffle_rng = (
+        random.Random(cfg.seed * _SHUFFLE_SEED_STRIDE)
+        if cfg.es_shuffle_fitness
+        else None
+    )
+    if shuffle_rng is not None:
+        logger.warning(
+            "ES SHUFFLED-FITNESS CONTROL active (--es-shuffle-fitness): per-step "
+            "advantages are permuted across noise vectors — same step magnitude, "
+            "random direction, NO selection. Diagnostic only, not a real run."
+        )
 
     # Optional trackio logging — the GRPO leg gets this for free via TRL's
     # report_to; the ES loop is hand-rolled, so mirror it here. Lazy-imported and
@@ -456,7 +574,7 @@ def run_es(cfg: RunConfig) -> Path:
             trackio.init(
                 project=Path(cfg.output_dir).name,
                 name="es",
-                space_id=cfg.trackio_space_id,
+                space_id=cfg.trackio_space_id or "trackio",
                 config={
                     "method": "es",
                     "model": cfg.model,
@@ -476,14 +594,28 @@ def run_es(cfg: RunConfig) -> Path:
     # The mini-batch picker rides the optimizer seed (like GRPO's data order),
     # not data_seed — the train slice itself is already pinned by data_seed.
     batch_rng = random.Random(cfg.seed)
+    # es_fixed_batch: draw the eval prompts ONCE and reuse them every step, so
+    # fitness_mean is comparable across steps (and the rank signal points at the
+    # same objective each step) rather than a different mini-batch each step.
+    # Default off — resampling is SGD-like and generalizes; fixed batch is for
+    # clean diagnostics / weak-signal regimes (judge generalization by held-out eval).
+    fixed_idx = (
+        batch_rng.sample(range(len(train_ds)), k=min(cfg.es_eval_batch, len(train_ds)))
+        if cfg.es_fixed_batch
+        else None
+    )
     total_tokens = 0
     step_times: list[float] = []
     t_start = time.perf_counter()
 
     for step in range(cfg.es_steps):
         t_step = time.perf_counter()
-        idx = batch_rng.sample(
-            range(len(train_ds)), k=min(cfg.es_eval_batch, len(train_ds))
+        idx = (
+            fixed_idx
+            if fixed_idx is not None
+            else batch_rng.sample(
+                range(len(train_ds)), k=min(cfg.es_eval_batch, len(train_ds))
+            )
         )
         batch = train_ds.select(idx)
         prompts = batch["prompt"]
@@ -517,7 +649,7 @@ def run_es(cfg: RunConfig) -> Path:
             collect_prompts=cfg.inspect_max_prompts if dump_this_step else 0,
         )
         total_tokens += tokens
-        engine.update(noise, fits)
+        engine.update(noise, fits, shuffle=shuffle_rng)
 
         if collect:
             items = [

@@ -28,7 +28,10 @@ in the training venv rather than the isolated hub venv.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
+import os
 import re
 from functools import lru_cache
 from types import ModuleType
@@ -85,6 +88,57 @@ def row_is_loadable(row: dict) -> bool:
     return load_pydantic_model(
         info.get("pydantic_config", ""), info.get("model_name", "")
     ) is not None
+
+
+logger = logging.getLogger(__name__)
+
+# Env var (opt-in) pointing at a JSON list of allowed sha1(prompt) hashes — the
+# difficulty filter. The hub env drops the raw ``metadata.difficulty`` column
+# (``select_columns`` in pydantic_adherence.py), so difficulty can't be read off
+# the row here; instead we re-join it by hashing the prompt text. ``question`` on
+# the env row equals the raw dataset ``prompt`` verbatim (the env's ``.map`` sets
+# ``question = x["prompt"]``), and prompts are unique (1971/1971), so the hash is
+# a sound key. Unset => no difficulty filtering (default behaviour unchanged).
+_DIFFICULTY_ENV = "PYDANTIC_DIFFICULTY_KEEP_FILE"
+
+
+@lru_cache(maxsize=4)
+def _difficulty_allowlist(path: str) -> frozenset[str]:
+    with open(path) as f:
+        return frozenset(json.load(f))
+
+
+def _prompt_sha1(row: dict) -> str:
+    # row_filter sees the raw env row (pre-mapping): ``question`` == raw prompt.
+    text = row.get("question") or row.get("prompt") or ""
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+
+def make_pydantic_row_filter():
+    """``row_is_loadable``, optionally AND-composed with a difficulty allowlist.
+
+    When ``$PYDANTIC_DIFFICULTY_KEEP_FILE`` points to a JSON list of allowed
+    ``sha1(prompt)`` hashes, the returned filter keeps only loadable rows whose
+    prompt hash is in that list (drop rows of other difficulties). Read at task
+    registration so it tracks the env var per process; unset returns the bare
+    ``row_is_loadable`` (no behaviour change for default runs). Applies to BOTH
+    train and the eval-window carve (both go through this row_filter), so the
+    held-out slice stays disjoint and within the same difficulty regime.
+    """
+    path = os.environ.get(_DIFFICULTY_ENV)
+    if not path:
+        return row_is_loadable
+    allow = _difficulty_allowlist(path)
+    logger.info(
+        "pydantic difficulty filter ON: %d allowed prompt hashes from %s",
+        len(allow),
+        path,
+    )
+
+    def _row_filter(row: dict) -> bool:
+        return row_is_loadable(row) and _prompt_sha1(row) in allow
+
+    return _row_filter
 
 
 def _extract_last_json(text: str) -> dict | None:

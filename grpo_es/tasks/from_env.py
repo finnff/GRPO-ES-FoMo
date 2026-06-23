@@ -372,11 +372,19 @@ def register_environment_task(task_name: str) -> TaskSpec:
     if not env_id:
         raise ValueError(f"empty env id in task name {task_name!r}")
     custom = ENV_CUSTOMIZATIONS.get(env_id, {})
+    row_filter = custom.get("row_filter")
+    if env_id == "primeintellect/pydantic-adherence":
+        # Resolve the row_filter at registration so it picks up the opt-in
+        # difficulty filter ($PYDANTIC_DIFFICULTY_KEEP_FILE) per process; unset
+        # => the bare row_is_loadable (identical to the static default below).
+        from grpo_es.rewards.pydantic_graded import make_pydantic_row_filter
+
+        row_filter = make_pydantic_row_filter()
     spec, _ = task_from_environment(
         task_name,
         env_id,
         rubric_override=custom.get("rubric_override"),
-        row_filter=custom.get("row_filter"),
+        row_filter=row_filter,
         eval_offset=custom.get("eval_offset", 0),
         eval_size=custom.get("eval_size"),
         eval_max_prompt=custom.get("eval_max_prompt", 512),

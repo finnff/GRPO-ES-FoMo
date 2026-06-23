@@ -23,9 +23,11 @@
 #   CFG_GRPO=<other> ONLY=grpo bash scripts/prime_pydantic_sweep.sh 1 2
 # The held-out eval window is placed AUTOMATICALLY disjoint from training:
 # train = shuffle(seed)[0:max_samples], so the window is [start:start+100] with
-# start = max(100, max_samples over the legs run). The GRPO default is 500-sample
-# -> [500:600]; an ES-only run (max_samples=64) floors to [100:200]. Base is
-# re-scored on that same window in the SAME eval call, so the delta stays paired.
+# start = max(100, largest max_samples across BOTH configs) — regardless of ONLY.
+# The 500-sample GRPO default fixes this at [500:600], and an ONLY=es run uses the
+# SAME [500:600] (still disjoint from ES train[0:64]) so the ES bar is paired with
+# the GRPO bar on identical prompts. Base is re-scored on that window in the SAME
+# eval call, so every delta stays paired. Override with EVAL_START=<n> if needed.
 #
 # --- ES is TUNED, not the default poster ES. ---
 # The default es_lr=0.05 saturates the trust region every step (theta_dev pinned
@@ -79,18 +81,18 @@ except Exception:
 PY
 }
 
-# Window start clears every training draw this run will make (max over selected
-# legs), floored at 100 so an ES-only run (max_samples=64) still gets a disjoint
-# [100:200]; the 500-sample GRPO default lifts it to [500:600].
-case "$ONLY" in
-  grpo) _ms=$(cfg_max_samples "$CFG_GRPO") ;;
-  es)   _ms=$(cfg_max_samples "$CFG_ES") ;;
-  both) _g=$(cfg_max_samples "$CFG_GRPO"); _e=$(cfg_max_samples "$CFG_ES")
-        _ms=$(( _g > _e ? _g : _e )) ;;
-esac
+# Window start clears the LARGEST training draw across BOTH legs (not just the
+# selected one), so an ONLY=es run evals on the SAME held-out window as the
+# already-done GRPO arm -> the ES/GRPO bars are paired on identical prompts.
+# [500:600] is trivially disjoint from ES train[0:64] too (500 >= 64). Floored at
+# 100. Override with EVAL_START=<n> only if you deliberately want another window.
+_g=$(cfg_max_samples "$CFG_GRPO")
+_e=$(cfg_max_samples "$CFG_ES")
+_ms=$(( _g > _e ? _g : _e ))
 SLICE_START=$(( _ms > 100 ? _ms : 100 ))
+SLICE_START="${EVAL_START:-$SLICE_START}"
 SLICE_END=$(( SLICE_START + EVAL_SIZE ))
-echo "configs: GRPO=$CFG_GRPO ES=$CFG_ES | held-out window [${SLICE_START}:${SLICE_END}] (disjoint from train[0:${_ms}])"
+echo "configs: GRPO=$CFG_GRPO ES=$CFG_ES | held-out window [${SLICE_START}:${SLICE_END}] (clears max train draw ${_ms} across both legs -> ES & GRPO paired)"
 
 train() {  # name  config  extra-flags...
   local name="$1" cfg="$2"; shift 2
