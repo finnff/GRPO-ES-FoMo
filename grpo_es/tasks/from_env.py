@@ -321,7 +321,7 @@ def task_from_environment(
                     len(rows),
                 )
             rows = kept
-        if split != "train" and source != "eval_dataset" and not spec.eval_offset:
+        if split != "train" and source != "eval_dataset" and (not spec.eval_offset or spec.eval_size is None):
             logger.warning(
                 "env %s has no eval split; split=%r fell back to its train "
                 "dataset — the held-out slice is NOT disjoint from training. "

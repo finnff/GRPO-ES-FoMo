@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rigorous PAIRED statistical analysis: GRPO vs ES vs base on seed-0 held-out [100:200].
+"""Rigorous PAIRED statistical analysis: GRPO vs ES vs base on held-out eval slices.
 
 Per-sample rewards are paired by index (same disjoint held-out window, greedy decode).
 scipy is unavailable in .venv-prime, so Wilcoxon signed-rank (normal approx with tie &
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path("/home/sga/MASTER/Foundation/Project/GRPO-ES-FoMo")
+ROOT = Path(__file__).resolve().parents[1]
 PRIME = ROOT / "outputs" / "prime"
 TOL = 1e-9
 EXACT = 1.0 - 1e-9  # threshold for "reward >= 1.0" full credit
@@ -310,6 +310,7 @@ def analyze():
 
     report = "\n".join(lines) + "\n"
     out = PRIME / "ANALYSIS_paired_stats.md"
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(report)
     print(report)
     print(f"\n[written] {out}")
