@@ -13,8 +13,10 @@ from typing import Callable
 from verifiers.rubrics.math_rubric import MathRubric
 from verifiers.rubrics.rubric import Rubric
 
+from grpo_es.rewards.ascii_tree_glyphnorm import AsciiTreeGlyphNormRubric
 from grpo_es.rewards.countdown_rubric import CountdownRubric
 from grpo_es.rewards.mcq_rubric import MCQLetterRubric
+from grpo_es.rewards.pydantic_graded import PydanticGradedRubric
 from grpo_es.rewards.toy_rubric import ToyRubric
 from grpo_es.rewards.trl_bridge import format_reward_func, rubric_reward_func
 
@@ -32,6 +34,11 @@ _FACTORIES: dict[str, Callable[[], Rubric]] = {
     "countdown": CountdownRubric,
     "gsm8k": _math_rubric,
     "mmlu_pro": MCQLetterRubric,
+    # Local graded overrides for hub envs whose stock reward is near-binary;
+    # wired in via ENV_CUSTOMIZATIONS (tasks/from_env.py). Static so they
+    # resolve at both train and eval.
+    "pydantic_graded": PydanticGradedRubric,
+    "ascii_tree_glyphnorm": AsciiTreeGlyphNormRubric,
 }
 
 # Hub-env tasks register their rubric factory here at task-registration time

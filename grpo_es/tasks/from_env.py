@@ -27,6 +27,7 @@ from typing import Any, Callable
 from datasets import Dataset
 from verifiers.rubrics.rubric import Rubric
 
+from grpo_es.rewards.pydantic_graded import row_is_loadable
 from grpo_es.rewards.registry import register_rubric
 from grpo_es.tasks.base import TaskSpec, shuffle_take
 from grpo_es.tasks.registry import register_task
@@ -34,6 +35,46 @@ from grpo_es.tasks.registry import register_task
 logger = logging.getLogger(__name__)
 
 ENV_TASK_PREFIX = "env:"
+
+# Per-env overrides applied automatically on the CLI ``env:<owner>/<env>`` path.
+# These hub envs ship near-binary rewards that collapse the gradient signal, so
+# we swap in a spine-local graded rubric (resolved statically in the rubric
+# registry) and, for pydantic, drop rows whose schema can't be loaded here
+# (unwinnable — see rewards/pydantic_graded.py). ``eval_size`` pins a disjoint
+# holdout because both envs publish only a train split (mirrors if_tasks.py).
+# Both envs publish a single train pool (worker source "dataset", never
+# "eval_dataset"), so drop_eval_window — which only carves an eval-only pool —
+# never fires and can't keep the holdout disjoint. We carve it the other way:
+# the holdout is shuffle(eval_seed)[eval_offset : eval_offset + eval_size] and
+# the train draw is shuffle(data_seed)[0 : max_samples]; with eval_seed ==
+# data_seed (both 0) those windows are disjoint iff eval_offset >= max_samples.
+# Each env's eval_offset must be >= that env's largest training max_samples.
+# Pydantic's GRPO default is now 500 (configs/grpo_pydantic_adherence.toml), so
+# pydantic uses eval_offset=500 -> holdout [500:600] (ES max_samples=64 clears it
+# too). Ascii stays at 100 (its legs are 100/64). Bump in lockstep if a config
+# raises max_samples past its env's offset.
+# eval_max_prompt/eval_max_new pin the held-out decode budget to the training
+# lengths (configs/{grpo,es}_*). They are the fallback the *baseline* eval uses
+# (no --decode-from run dir); the default eval_max_prompt=512 would truncate the
+# pydantic schema (~1k tok) and silently break the gate. Post-training evals pass
+# --decode-from <rundir> and read the same numbers straight from run_config.json.
+ENV_CUSTOMIZATIONS: dict[str, dict] = {
+    "primeintellect/pydantic-adherence": {
+        "rubric_override": "pydantic_graded",
+        "row_filter": row_is_loadable,
+        "eval_offset": 500,  # >= max_samples=500 in grpo_pydantic_adherence.toml
+        "eval_size": 100,
+        "eval_max_prompt": 2048,
+        "eval_max_new": 1024,
+    },
+    "primeintellect/ascii-tree": {
+        "rubric_override": "ascii_tree_glyphnorm",
+        "eval_offset": 100,
+        "eval_size": 100,
+        "eval_max_prompt": 1024,
+        "eval_max_new": 1024,
+    },
+}
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _WORKER = _REPO_ROOT / "scripts" / "prime_env_worker.py"
@@ -206,6 +247,7 @@ def task_from_environment(
     *,
     rubric_override: str | None = None,
     reward_metric: str | None = None,
+    row_filter: Callable[[dict], bool] | None = None,
     prompt_transform: Callable[[Any, str], str] | None = None,
     eval_split: str = "test",
     eval_seed: int = 0,
@@ -267,7 +309,19 @@ def task_from_environment(
         max_samples: int | None = None,
     ) -> Dataset:
         rows, source = client.dataset(env_id, split)
-        if split != "train" and source != "eval_dataset":
+        if row_filter is not None:
+            kept = [row for row in rows if row_filter(row)]
+            dropped = len(rows) - len(kept)
+            if dropped:
+                logger.info(
+                    "env %s split=%r: row_filter dropped %d/%d unwinnable rows",
+                    env_id,
+                    split,
+                    dropped,
+                    len(rows),
+                )
+            rows = kept
+        if split != "train" and source != "eval_dataset" and (not spec.eval_offset or spec.eval_size is None):
             logger.warning(
                 "env %s has no eval split; split=%r fell back to its train "
                 "dataset — the held-out slice is NOT disjoint from training. "
@@ -317,5 +371,23 @@ def register_environment_task(task_name: str) -> TaskSpec:
     env_id = task_name[len(ENV_TASK_PREFIX) :]
     if not env_id:
         raise ValueError(f"empty env id in task name {task_name!r}")
-    spec, _ = task_from_environment(task_name, env_id)
+    custom = ENV_CUSTOMIZATIONS.get(env_id, {})
+    row_filter = custom.get("row_filter")
+    if env_id == "primeintellect/pydantic-adherence":
+        # Resolve the row_filter at registration so it picks up the opt-in
+        # difficulty filter ($PYDANTIC_DIFFICULTY_KEEP_FILE) per process; unset
+        # => the bare row_is_loadable (identical to the static default below).
+        from grpo_es.rewards.pydantic_graded import make_pydantic_row_filter
+
+        row_filter = make_pydantic_row_filter()
+    spec, _ = task_from_environment(
+        task_name,
+        env_id,
+        rubric_override=custom.get("rubric_override"),
+        row_filter=row_filter,
+        eval_offset=custom.get("eval_offset", 0),
+        eval_size=custom.get("eval_size"),
+        eval_max_prompt=custom.get("eval_max_prompt", 512),
+        eval_max_new=custom.get("eval_max_new", 768),
+    )
     return spec

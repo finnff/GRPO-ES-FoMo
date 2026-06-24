@@ -1,0 +1,58 @@
+# GRPO on pydantic-adherence — emit JSON that validates against a given Pydantic model.
+# Hub-backed task: needs .venv-prime (see README).
+# Install once: scripts/setup_prime_venv.sh primeintellect/pydantic-adherence
+#
+#   python run.py --config configs/grpo_pydantic_adherence.toml --seed 0
+#   # OR (recommended — seed sweep + paired held-out [500:600] eval, re-baselined):
+#   ONLY=grpo bash scripts/prime_pydantic_sweep.sh 0 1 2
+#
+# GRADED REWARD + ROW-FILTER (auto-wired). The env's stock reward is binary
+# (1.0 iff the JSON validates against the per-sample schema, else 0.0), which
+# collapses GRPO within-group advantage; worse, its reward fn THROWS on
+# forward-ref schemas (they need model_rebuild(), which the env never calls).
+# The CLI env: path now (a) swaps in a spine-local graded rubric — fraction of
+# model fields that validate (grpo_es/rewards/pydantic_graded.py) — and (b) drops
+# rows whose schema can't load here, both via ENV_CUSTOMIZATIONS in
+# grpo_es/tasks/from_env.py. No flags needed. The filter calls model_rebuild()
+# (the rescue the env omits), so most forward-ref schemas now LOAD and stay
+# winnable; only genuinely-dead ones (missing optional deps like email-validator,
+# or unfixable) are dropped — 123/1971 here. Schema lives in the `info` column.
+#
+# VALIDATED RESULT (lfm2.5-1.2b, seeds 0-2, held-out [500:600]): mean graded
+# reward 0.3929 (base) -> 0.5634 +- 0.0376  (Δ +0.1704, 95% CI [+0.077,+0.264],
+# p~0.006), exact 0.060 -> 0.190 (3.2x). The per-checkpoint held-out curve climbs
+# monotonically to step 500 with no erosion; KL-to-base stays modest (~0.027).
+method = "grpo"
+task = "env:primeintellect/pydantic-adherence"
+model = "lfm2.5-1.2b"
+
+# More UNIQUE training prompts is the binding lever: the env has ~1850 loadable
+# rows, and the old 100/1-epoch was the data ceiling that left GRPO timid. 500
+# distinct prompts -> the held-out gain above.
+# ⚠ Train draw is shuffle(seed)[0:max_samples]; the held-out window must START at
+# an index >= max_samples to stay disjoint. ENV_CUSTOMIZATIONS pins the pydantic
+# eval_offset to 500 to match (-> [500:600]), and the sweep also passes
+# --slice 500:600. If you change max_samples, bump that eval_offset in lockstep
+# (grpo_es/tasks/from_env.py) or the held-out eval will overlap training.
+max_samples = 500
+
+# Prompts embed a full Pydantic config (~1000 tok); keep train==eval lengths.
+max_prompt_length = 2048
+max_completion_length = 1024
+
+# Let the policy actually move: learning_rate 2e-5 -> 3e-5 (bigger steps) AND
+# beta 0.04 -> 0.02 (looser KL anchor). At beta=0.04 the run sat at KL~0.004 —
+# far under the honesty budget — so the anchor was over-regularizing and pinning
+# the policy to base. Watch KL/gate/mean_length in the eval JSON: if KL runs hot
+# or mean_length collapses (empty-container reward hack), tighten beta toward 0.04.
+learning_rate = 3e-5
+beta = 0.02
+
+# Chat template ON (poster discipline): LFM2.5 ships one and bare prompts drop
+# instruct models out of distribution; eval uses the same setting (train==eval).
+chat_template = "on"
+# Log per-step metrics (reward/kl/loss) to trackio (TRL report_to="trackio").
+use_trackio = true
+# Checkpoint cadence so the held-out curve has interior points, not just final.
+save_steps = 25
+output_dir = "outputs/grpo-pydantic-adherence"
