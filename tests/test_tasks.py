@@ -1,3 +1,4 @@
+from grpo_es.rewards.countdown_rubric import validate_expression
 from grpo_es.tasks.base import build_dataset, build_eval_dataset
 from grpo_es.tasks.registry import get_task_spec
 
@@ -22,7 +23,10 @@ def test_countdown_dataset_columns():
     assert {"prompt", "answer", "numbers", "target"} <= set(ds.column_names)
     for row in ds:
         assert len(row["numbers"]) == 4
-        assert row["answer"] == str(row["target"])
+        # `answer` is now a CONSTRUCTED solution expression (not the target
+        # string); it must validate as an exact solve over the row's operands.
+        is_exact, _ = validate_expression(row["answer"], row["numbers"], row["target"])
+        assert is_exact
         assert str(row["target"]) in row["prompt"]
 
 

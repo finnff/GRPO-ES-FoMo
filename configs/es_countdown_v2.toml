@@ -1,0 +1,57 @@
+# ES on countdown — VARIATION #2 (rank-1 from the design panel).
+#
+# Diagnosis (4-lens panel + live var#1 log): ES on countdown is NOISE/TIMIDITY-
+# limited, NOT regime-broken. The reward is an exact-cliff (~84% binary), so per-
+# member fitness is a noisy Bernoulli-ish mean and the centered-rank gradient ranks
+# partly on sampling noise. The live var#1 log showed fitness CLIMBING (0.29->0.49)
+# with theta_dev rising but DECELERATING (sqrt(t) random walk) toward only ~9-11 at
+# step 48 — i.e. the trust cap (13.47) is NON-BINDING (~3.6x headroom). So the regime
+# (es_lr 1e-4, trust 1.0, noise 0.2) is right but the step is TIMID and the selection
+# signal is decode-noise-contaminated.
+#
+# TWO orthogonal, cheap fixes (this config applies BOTH):
+#   1. es_greedy_fitness = true  — FREE. Fitness rollouts become greedy (es.py:534),
+#      so (a) both members of each antithetic pair are deterministic -> pair_adv is
+#      PURELY the perturbation effect, and (b) we optimize EXACTLY the greedy held-out
+#      objective (kills the T=1.0-sampled-vs-greedy-eval mismatch). Pure variance kill.
+#   2. es_lr 1e-4 -> 3e-4 — spend the idle ~3.6x trust budget so selected movement
+#      accumulates into a real policy change; the cap stays a genuine late-run guard.
+#      Safe to be aggressive here: countdown has brevity pressure (no token-spam basin),
+#      so 3e-4 cannot run away the way it would on pydantic.
+#
+# Expected: convert the training-fitness climb into held-out +0.03..+0.08.
+# Falsification: held-out Δ <= +0.01 despite cleaned greedy + 3x step + train fitness
+# climbing past ~0.45  => countdown ES is genuinely noise-floored/train-pool-overfit.
+# MANDATORY control: re-run this exact config with --es-shuffle-fitness; the gain only
+# counts if shuffle lands flat/negative (edge = real - shuffle = honest effect size).
+#
+#   python run.py --config configs/es_countdown_v2.toml --seed 0
+method = "es"
+task = "countdown"
+model = "lfm2.5-1.2b"
+
+max_samples = 256
+max_completion_length = 512
+
+# Proven capped forced-KL regime, with the lr bumped per the non-binding-cap finding.
+es_lr = 3e-4                  # 1e-4 -> 3e-4: spend the idle trust budget (cap non-binding)
+es_noise_ratio = 0.2          # unchanged (sigma = 0.2*||theta0||/sqrt(d))
+es_trust_ratio = 1.0          # unchanged protective cap at 1.0*init_norm (~13.47)
+es_greedy_fitness = true      # NEW free lever: greedy fitness = deterministic pairs +
+                              #   train objective == greedy held-out objective
+
+# Science knobs unchanged from var#1 so the result is interpretable (only lr + greedy
+# change). member_batch 8 -> 12 to FEED THE GPU: var#1 ran 77.8 s/step at mb8 (resident
+# 128, ~half power = launch/bandwidth-bound); mb12 (resident 192) ran 48.9 s/step in the
+# smoke (~1.6x faster) at ~21 GB worst case (safe w/ expandable_segments). Greedy decode
+# is faster+shorter still, so 44 steps lands well under the 60-min budget.
+es_population = 64            # antithetic pairs (128 members/step) — unchanged
+es_eval_batch = 16           # prompts/member — unchanged
+es_member_batch = 12         # VRAM/throughput lever: resident 12*16=192 -> ~21 GB worst
+es_steps = 44                # ~49 s/step * 44 ~= 36-40 min (greedy faster) -> within budget
+save_steps = 11              # ckpts at 11/22/33/44 -> fine ES held-out trajectory (catch peak)
+# gens/step = 2*64*16 = 2048.
+
+chat_template = "on"
+use_trackio = true
+output_dir = "outputs/es-countdown-v2"
