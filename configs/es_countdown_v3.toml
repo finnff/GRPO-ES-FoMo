@@ -1,0 +1,41 @@
+# ES on countdown — VARIATION #3 = THE WINNER (greedy fitness @ in-window lr 1e-4).
+#
+# This is the self-contained version of what the results doc calls "v3". Originally v3
+# was run as `es_countdown_v2.toml --es-lr 1e-4` (a CLI override), because v2's baked
+# default es_lr = 3e-4 SATURATED the trust cap (theta_dev pinned 13.46 -> fixed-norm
+# random walk -> only +0.1125, WORSE). Baking lr = 1e-4 here removes that footgun so the
+# headline result reproduces from one file:
+#
+#   python run.py --config configs/es_countdown_v3.toml --seed 0
+#
+# RESULT (held-out, pooled n=200, 3 seeds): +0.185 ± 0.007, every cell p<.001 — matches
+# GRPO (+0.188 ± 0.013; per-seed paired gap ns, t=0.28). Two levers got ES off the old
+# null (-0.019): population 16->64 (the sqrt(d/N.T) under-scaling story) and — decisively
+# — es_greedy_fitness (free: deterministic antithetic pairs + train objective == greedy
+# held-out objective). Validated by a shuffle control (selection edge +0.138 p<.01) across
+# 2 disjoint slices. Sweet spot is ~22-44 steps (the trust cap binds by ~step 48, so more
+# steps don't help). See results/COUNTDOWN_LFM1p2B_GRPO_ES_RESULTS.md.
+#
+# Identical to es_countdown_v2.toml EXCEPT es_lr (3e-4 -> 1e-4, baked).
+method = "es"
+task = "countdown"
+model = "lfm2.5-1.2b"
+
+max_samples = 256
+max_completion_length = 512
+
+# Proven capped forced-KL regime at the IN-WINDOW lr (the v2->v3 fix).
+es_lr = 1e-4                  # baked winner (NOT v2's 3e-4 cap-saturating default)
+es_noise_ratio = 0.2          # sigma = 0.2*||theta0||/sqrt(d)
+es_trust_ratio = 1.0          # protective cap at 1.0*init_norm (~13.46)
+es_greedy_fitness = true      # the decisive lever: deterministic pairs + greedy objective
+
+es_population = 64            # antithetic pairs (128 members/step)
+es_eval_batch = 16           # prompts/member
+es_member_batch = 12         # VRAM/throughput lever: resident 12*16=192 -> ~21 GB worst-case
+es_steps = 44                # ~40-52 min at mb12; sweet spot (192-step probe: no gain past ~48)
+save_steps = 11              # ckpts at 11/22/33/44 -> fine held-out trajectory
+
+chat_template = "on"
+use_trackio = true
+output_dir = "outputs/es-countdown-v3"

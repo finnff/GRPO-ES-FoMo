@@ -1,11 +1,42 @@
 # GRPO on countdown — reach a target by combining the given numbers.
+# Local task (faithful sivit/countdown-plain port): solvable constructed
+# targets, prose-tolerant parser, dense reward = 1.0*exact + 0.25*closeness
+# (perfect solve = 1.25), no <think>/<answer> scaffold (format_scaffold=False).
 #
 #   python run.py --config configs/grpo_countdown.toml --seed 0
 #
-# Keys are RunConfig field names; any CLI flag still overrides what's here.
+# BASE HEADROOM (LFM2.5-1.2B, greedy, eval_seed 999, n=100): mean_reward 0.355,
+# exact 27%, partial 24% — off-floor and trainable. Failure mode is verbosity
+# (ramble->clip), so the reward has built-in brevity pressure (no token-spam
+# basin). Tuned like the pydantic GRPO arm: lr 3e-5 + beta 0.02 to let the
+# policy actually move; chat_template on (train==eval).
 method = "grpo"
 task = "countdown"
-model = "qwen3.5-0.8b"
-max_samples = 100
-max_completion_length = 256
+model = "lfm2.5-1.2b"
+
+# Generated puzzles: max_samples = number of UNIQUE training puzzles drawn at
+# data_seed (eval uses eval_seed 999 -> disjoint by construction). TRL logs one
+# global_step per prompt-group, so max_samples == #steps for 1 epoch. Bumped
+# 256 -> 512 to test whether GRPO is still climbing past step 256: the seed-0
+# exploratory run hit Δ+0.229 at step 256 with no sign of erosion, so "maybe it
+# isn't done improving". load_countdown does random.seed(seed) then generates in
+# sequence, so the first 256 of these 512 puzzles are byte-identical to the
+# 256-run -> 512 is a clean SUPERSET, and the held-out (eval_seed 999) stays
+# disjoint by construction. save_steps=64 -> interior ckpts at 64,128,...,512 so
+# the held-out curve shows climb-vs-plateau.
+max_samples = 512
+
+# Base solvers fit in ~160 tok; 512 keeps even long solution chains uncut while
+# the brevity pressure trims ramblers (256 would clip legit solves).
+max_completion_length = 512
+
+learning_rate = 3e-5
+beta = 0.02
+
+# Chat template ON (poster discipline); eval uses the same setting (train==eval).
+chat_template = "on"
+# Log per-step metrics (reward/kl/loss) to trackio (TRL report_to="trackio").
+use_trackio = true
+# Checkpoint cadence so the held-out curve has interior points (64,128,...,512).
+save_steps = 64
 output_dir = "outputs/grpo-countdown"

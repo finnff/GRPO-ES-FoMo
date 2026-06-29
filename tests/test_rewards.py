@@ -63,36 +63,42 @@ def test_toy_rubric_rejects_bare_answer():
 @pytest.mark.parametrize(
     ("expr", "expected"),
     [
-        ("2*3+4+1", 1.0),  # hits 11 with the right multiset
-        ("2*3+4", 0.0),  # missing an operand
-        ("2*3+4+2", 0.0),  # wrong operand
+        # exact solve over the full multiset -> exact(1.0) + closeness(0.25).
+        ("2*3+4+1", 1.25),
+        # countdown-plain uses each number AT MOST once, so a subset is legal:
+        # 2*3+4 = 10 is valid-but-off-by-1 -> closeness term only (0.25-weighted).
+        ("2*3+4", 0.25 * 0.5 ** (1 / 10)),
+        ("2*3+4+2", 0.0),  # reuses 2; only one 2 in the multiset -> invalid
         ("2*/3", 0.0),  # syntax error
         ("__import__('os')", 0.0),  # disallowed node, not an eval()
     ],
 )
 def test_countdown_rubric(expr, expected):
     func = rubric_reward_func(get_rubric("countdown"))
+    # The parser is prose-tolerant (grabs the last valid arithmetic expression),
+    # so no <think>/<answer> scaffold is required.
     scores = func(
         ["reach 11"],
-        [f"<think>...</think><answer>{expr}</answer>"],
-        answer=["11"],
+        [f"the final expression is {expr}"],
+        answer=["2*3+4+1"],
         numbers=[[2, 3, 4, 1]],
         target=[11],
     )
-    assert scores == [expected]
+    assert scores == pytest.approx([expected])
 
 
 def test_countdown_division_tolerance():
     func = rubric_reward_func(get_rubric("countdown"))
-    # 7/7 + 9 + 1 = 11 exercises true division landing within 1e-6.
+    # 7/7 + 9 + 1 = 11 exercises true division landing within tolerance ->
+    # exact solve scores exact(1.0) + closeness(0.25) = 1.25.
     scores = func(
         ["reach 11"],
-        ["<answer>7/7 + 9 + 1</answer>"],
-        answer=["11"],
+        ["7/7 + 9 + 1"],
+        answer=["7/7 + 9 + 1"],
         numbers=[[7, 7, 9, 1]],
         target=[11],
     )
-    assert scores == [1.0]
+    assert scores == pytest.approx([1.25])
 
 
 def test_countdown_zero_division_scores_zero():

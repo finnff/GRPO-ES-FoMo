@@ -1,15 +1,61 @@
 # ES on countdown — reach a target by combining the given numbers.
-# sigma/trust-region auto-scale to the LoRA geometry (the -1 defaults).
+# Local task (faithful sivit/countdown-plain port): dense reward
+# = 1.0*exact + 0.25*closeness (perfect solve = 1.25). Born-dense, so ES gets a
+# live fitness spread out of the box (no graded override needed, unlike pydantic),
+# and there is NO token-spam reward-hacking basin (brevity pressure).
 #
 #   python run.py --config configs/es_countdown.toml --seed 0
 #
-# Keys are RunConfig field names; any CLI flag still overrides what's here.
+# ⚠ This uses the PROVEN capped forced-KL recipe from the pydantic ES arm, NOT
+# the inert auto/0.05 default. On the LFM LoRA geometry es_lr 0.05 saturates the
+# trust cap every step (fixed-norm random walk = null); es_lr 1e-4 + a protective
+# trust cap at ~init_norm (trust_ratio 1.0) is the window where ES selection
+# clears the sqrt(d/N) noise floor. To prove selection vs movement, add
+# --es-shuffle-fitness as a control run (expect it to land negative/flat).
 method = "es"
 task = "countdown"
-model = "qwen3.5-0.8b"
-max_samples = 64
-es_population = 16
-es_eval_batch = 8
-es_steps = 40
-max_completion_length = 256
+model = "lfm2.5-1.2b"
+
+# Resample pool of unique puzzles (eval_seed 999 -> disjoint held-out).
+max_samples = 256
+max_completion_length = 512
+
+# Forced-KL + protective cap (the pydantic +0.070 recipe) — UNCHANGED, so this
+# run tests SCALE within the known-working regime, not a regime change.
+es_lr = 1e-4
+es_noise_ratio = 0.2          # auto-sigma: per-member noise norm / init_norm
+es_trust_ratio = 1.0          # cap ||theta - theta_init|| at 1.0 * init_norm
+
+# SCALED UP from the seed-0 exploratory null (pop 16 / eb 8 / mb 16 / 48 steps ->
+# Δ-0.019, flat exact) to test the "ES is finicky == under-scaled gradient"
+# hypothesis (cf. the pydantic dead-end that turned out scale/regime-dependent).
+# The zeroth-order direction error ~ sqrt(d/(N*T)): raising the antithetic count
+# N and steps T both shrink it. We have a 32 GB card (~31 GB free; the seed-0 run
+# used only ~14 GB), so we spend the headroom on a 2x-bigger resident decode batch.
+es_population = 64           # 16 -> 64: 4x antithetic pairs (128 members/step);
+                            #   halves the sqrt(d/N) direction error
+es_eval_batch = 16          # 8 -> 16: 2x prompts/member -> lower fitness noise &
+                            #   fewer zero-gradient pairs on the exact-cliff reward
+es_member_batch = 8         # VRAM peak ~ resident(mb*eb) * ACTUAL seqlen, and
+                            #   seqlen is STOCHASTIC: a step where the population
+                            #   rambles to max_completion_length spikes the KV cache
+                            #   across all members at once. Observed worst case:
+                            #   resident 256 -> 30.7 GB (94%, the "weird" mb=16
+                            #   transient), resident 128 -> ~15 GB. mb=8 -> resident
+                            #   128 -> ~15 GB worst case (the known-safe level from
+                            #   the seed-0 run) -> bulletproof for an unattended
+                            #   96-step run regardless of ramble. pop & eval_batch
+                            #   (the science) UNCHANGED -> just more, smaller decode
+                            #   chunks (8/sign). §2 fix B (es.py:386): mb<pop safe.
+es_steps = 48               # ~60s/step * 48 = ~48 min (fits the 60-min/run budget).
+                            #   N*T = 64*48 = 3072 vs null 16*48 = 768 -> 4x -> halves
+                            #   the sqrt(d/(N*T)) direction error (the scale lever).
+# gens/step = 2*N*eval_batch = 2*64*16 = 2048 (8x the seed-0 run); ~60-80 s/step.
+save_steps = 24             # ckpts at 24/48 -> ES held-out trajectory
+
+# Chat template ON (poster discipline); eval uses the same setting (train==eval).
+chat_template = "on"
+# Log per-step metrics (fitness_mean/theta_dev/mean_len) to trackio; falls back
+# to history.jsonl if trackio init fails (guarded import in es.py).
+use_trackio = true
 output_dir = "outputs/es-countdown"
