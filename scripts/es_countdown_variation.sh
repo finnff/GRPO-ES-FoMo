@@ -9,8 +9,9 @@
 #   bash scripts/es_countdown_variation.sh es_v2_shuffle     es_countdown_v2 --es-shuffle-fitness
 set -u
 set -o pipefail
-PY="${PY:-/home/sga/miniconda3/envs/FoMo-RL/bin/python}"
-cd /home/sga/MASTER/Foundation/Project/GRPO-ES-FoMo
+PY="${PY:-python}"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 SEED="${SEED:-0}"
 OUT="${OUT_DIR:-outputs/prime_countdown_sweep}"
