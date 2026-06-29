@@ -19,8 +19,9 @@
 set -u
 set -o pipefail                         # `... | tee` reports python's exit, not tee's
 
-PY="${PY:-/home/sga/miniconda3/envs/FoMo-RL/bin/python}"
-cd /home/sga/MASTER/Foundation/Project/GRPO-ES-FoMo
+PY="${PY:-python}"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
 # Tame fragmentation-driven transient VRAM spikes (the "weird peak"): grow
 # segments instead of grabbing huge contiguous blocks. Cheap insurance on a
 # long run where a rambling ES step can momentarily balloon the KV cache.
