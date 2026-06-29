@@ -111,7 +111,10 @@ def validate_expression(
     if not expr:
         return False, None
     expr = normalize_operators(expr).replace(",", "")
-    used_numbers = [int(float(n)) for n in re.findall(r"\d+(?:\.\d+)?", expr)]
+    # Disallow decimal literals; the only non-integer values should come from operations.
+    if "." in expr:
+        return False, None
+    used_numbers = [int(n) for n in re.findall(r"\d+", expr)]
     available = Counter(numbers)
     for number in used_numbers:
         if available[number] <= 0:
