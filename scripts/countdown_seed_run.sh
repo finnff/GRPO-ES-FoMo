@@ -11,8 +11,9 @@
 #   ONLY=es   bash scripts/countdown_seed_run.sh 2
 set -u
 set -o pipefail
-PY="${PY:-/home/sga/miniconda3/envs/FoMo-RL/bin/python}"
-cd /home/sga/MASTER/Foundation/Project/GRPO-ES-FoMo
+PY="${PY:-python}"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 SEED="${1:?usage: countdown_seed_run.sh SEED}"
