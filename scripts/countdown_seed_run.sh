@@ -41,7 +41,7 @@ fi
 
 # ---- ES v3 = greedy fitness + lr 1e-4 (train + eval slice 0:100 full curve) ----
 if [ "$ONLY" = both ] || [ "$ONLY" = es ]; then
-  SEED="$SEED" bash scripts/es_countdown_variation.sh es_v3_greedy_lr1e4 es_countdown_v2 --es-lr 1e-4 \
+  SEED="$SEED" bash scripts/es_countdown_variation.sh es_v3_greedy_lr1e4 es_countdown_v3 \
     || { echo "ES arm FAILED"; exit 1; }
   # disjoint slice 100:200 at ckpt-22 + ckpt-final (matches seed-0/1 disjoint set)
   E22="$OUT/es_v3_greedy_lr1e4_s${SEED}/checkpoint-22"
