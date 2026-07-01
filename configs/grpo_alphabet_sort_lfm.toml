@@ -1,0 +1,12 @@
+# GRPO on alphabet-sort with LFM2.5-1.2B-Instruct.
+# Hub-backed task: needs .venv-prime (see README).
+#
+#   python run.py --config configs/grpo_alphabet_sort_lfm.toml --seed 0
+method = "grpo"
+task = "env:primeintellect/alphabet-sort"
+model = "lfm2.5-1.2b"
+max_samples = 100
+max_prompt_length = 512
+max_completion_length = 2048
+repetition_penalty = 1.2
+output_dir = "outputs/grpo-alphabet-sort-lfm"

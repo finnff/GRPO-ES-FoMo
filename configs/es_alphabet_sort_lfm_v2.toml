@@ -1,0 +1,18 @@
+# ES on alphabet-sort with LFM2.5-1.2B-Instruct — v2 (trust-region fix).
+# v1 had es_lr=0.05 (default): first update overshot the trust region boundary
+# and theta_dev stayed pinned at 3.37 for all 40 steps — no cumulative learning.
+# Fix: es_lr=0.005 so updates approach the boundary gradually.
+#
+#   python run.py --config configs/es_alphabet_sort_lfm_v2.toml --seed 0
+method = "es"
+task = "env:primeintellect/alphabet-sort"
+model = "lfm2.5-1.2b"
+max_samples = 64
+max_prompt_length = 512
+max_completion_length = 2048
+repetition_penalty = 1.2
+es_population = 16
+es_eval_batch = 8
+es_steps = 40
+es_lr = 0.005
+output_dir = "outputs/es-alphabet-sort-lfm-v2"

@@ -1,0 +1,21 @@
+# ES on alphabet-sort with LFM2.5-1.2B-Instruct — v4 (lr calibrated to model size).
+# Root cause: auto-sigma scales per-param noise to 20% of init_norm/sqrt(P), but
+# the gradient accumulation across 16 pairs grows the update by sqrt(P) -- so
+# ||delta|| ~ lr * P / init_norm.  For LFM r=16 (P~262k, init_norm~13.5),
+# the default lr=0.05 moves weights ~800x init_norm per step.
+# Fix: lr=0.0001 gives ||delta|| ~ 1-2x init_norm per step (gradual learning).
+#
+#   python run.py --config configs/es_alphabet_sort_lfm_v4.toml --seed 0
+method = "es"
+task = "env:primeintellect/alphabet-sort"
+model = "lfm2.5-1.2b"
+max_samples = 64
+max_prompt_length = 512
+max_completion_length = 2048
+repetition_penalty = 1.2
+es_population = 16
+es_eval_batch = 8
+es_steps = 40
+es_lr = 0.0001
+es_trust_region = 0
+output_dir = "outputs/es-alphabet-sort-lfm-v4"
