@@ -1,0 +1,19 @@
+# ES on alphabet-sort with LFM2.5-1.2B-Instruct — v3 (trust-region disabled).
+# v1 (lr=0.05) and v2 (lr=0.005): trust region binding from step 1 because
+# the update norm scales with lr*P/init_norm^2 (~4.5x trust_region at lr=0.005).
+# Fix: es_trust_region=0 disables the projection entirely.
+#
+#   python run.py --config configs/es_alphabet_sort_lfm_v3.toml --seed 0
+method = "es"
+task = "env:primeintellect/alphabet-sort"
+model = "lfm2.5-1.2b"
+max_samples = 64
+max_prompt_length = 512
+max_completion_length = 2048
+repetition_penalty = 1.2
+es_population = 16
+es_eval_batch = 8
+es_steps = 40
+es_lr = 0.01
+es_trust_region = 0
+output_dir = "outputs/es-alphabet-sort-lfm-v3"
